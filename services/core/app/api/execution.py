@@ -20,7 +20,7 @@ class Credential(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tenant_id: UUID
-    role: Literal["worker", "reconciler"]
+    role: Literal["worker", "reconciler", "approval_poster"]
     principal: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$")
     token: GrantToken = Field(repr=False)
 
@@ -47,6 +47,13 @@ class Evidence(BaseModel):
         return self
 
 
+class SlackDelivery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: Annotated[str, Field(pattern=r"^[A-Z0-9]{1,64}$")]
+    ts: Annotated[str, Field(pattern=r"^[0-9]{1,16}\.[0-9]{6}$")]
+
+
 class ClaimResult(BaseModel):
     action_id: UUID
     grant: GrantToken
@@ -69,7 +76,9 @@ def execution_router(
     ):
         raise ValueError("Execution principals must be unique in their tenant and role")
 
-    def authenticate(role: Literal["worker", "reconciler"]) -> Callable[..., Credential]:
+    def authenticate(
+        role: Literal["worker", "reconciler", "approval_poster"],
+    ) -> Callable[..., Credential]:
         def require(authorization: Annotated[str | None, Header()] = None) -> Credential:
             token = bearer_token(authorization)
             for entry in credentials:
@@ -81,6 +90,7 @@ def execution_router(
 
     worker = authenticate("worker")
     reconciler = authenticate("reconciler")
+    poster = authenticate("approval_poster")
 
     def transition(credential: Credential, query: str, params: tuple[object, ...]) -> object:
         try:
@@ -113,6 +123,12 @@ def execution_router(
             "SELECT public.claim_mock_action(%s,%s,%s)",
             (action_id, credential.principal, sha256(grant.encode("ascii")).digest()),
         )
+        if expires is None:
+            expires = transition(
+                credential,
+                "SELECT public.replace_unused_mock_grant(%s,%s,%s)",
+                (action_id, credential.principal, sha256(grant.encode("ascii")).digest()),
+            )
         if not isinstance(expires, datetime):
             raise HTTPException(409, "Action could not be claimed")
         return ClaimResult(
@@ -171,5 +187,113 @@ def execution_router(
         if not isinstance(status, str):
             raise HTTPException(409, "Action cannot be reconciled")
         return {"status": status}
+
+    @router.get("/reconciliation/pending")
+    def reconciliation_pending(credential: Annotated[Credential, Depends(reconciler)]) -> object:
+        return transition(
+            credential,
+            """
+            SELECT coalesce(jsonb_agg(to_jsonb(item)), '[]'::jsonb)
+              FROM (SELECT id AS action_id, tenant_id, trace_id
+                      FROM public.actions
+                     WHERE tenant_id = %s AND adapter = 'mock'
+                       AND (status = 'unknown_outcome' OR
+                            (status = 'executing' AND lease_expires_at <= clock_timestamp()))
+                     ORDER BY lease_expires_at, id LIMIT 100) item
+            """,
+            (credential.tenant_id,),
+        )
+
+    @router.get("/dispatch/send-reply")
+    def dispatch_pending(credential: Annotated[Credential, Depends(worker)]) -> object:
+        return transition(
+            credential,
+            """
+            SELECT coalesce(jsonb_agg(jsonb_build_object('action_id', item.id)), '[]'::jsonb)
+              FROM (SELECT id FROM public.actions
+                     WHERE tenant_id = %s AND adapter = 'mock' AND tool_key = 'send_reply'
+                       AND status = 'approved'
+                     ORDER BY created_at, id LIMIT 100) item
+            """,
+            (credential.tenant_id,),
+        )
+
+    @router.get("/approvals/pending")
+    def approvals_pending(credential: Annotated[Credential, Depends(poster)]) -> object:
+        return transition(
+            credential,
+            """
+            SELECT coalesce(jsonb_agg(jsonb_build_object('request_id', item.id)), '[]'::jsonb)
+              FROM (SELECT r.id FROM public.approval_requests r
+                      JOIN public.cases c ON (c.tenant_id,c.id) = (r.tenant_id,r.case_id)
+                      JOIN public.queues q ON (q.tenant_id,q.id) = (c.tenant_id,c.queue_id)
+                      JOIN public.tenant_settings s ON s.tenant_id = r.tenant_id
+                     WHERE r.tenant_id = %s AND r.status = 'pending' AND r.slack_message_ts IS NULL
+                       AND r.sla_due_at > clock_timestamp() AND q.notify_channel IS NOT NULL
+                       AND s.slack_workspace_id IS NOT NULL
+                     ORDER BY r.created_at,r.id LIMIT 100) item
+            """,
+            (credential.tenant_id,),
+        )
+
+    @router.get("/approvals/{request_id}/notification")
+    def approval_notification(
+        request_id: UUID,
+        credential: Annotated[Credential, Depends(poster)],
+    ) -> object:
+        details = transition(
+            credential,
+            """
+            SELECT jsonb_build_object(
+              'request_id', r.id, 'subject_type', r.subject_type, 'required_role', r.required_role,
+              'channel', q.notify_channel, 'workspace', s.slack_workspace_id,
+              'posted_ts', r.slack_message_ts, 'deadline', r.sla_due_at
+            )
+            FROM public.approval_requests r
+            JOIN public.cases c ON (c.tenant_id,c.id) = (r.tenant_id,r.case_id)
+            JOIN public.queues q ON (q.tenant_id,q.id) = (c.tenant_id,c.queue_id)
+            JOIN public.tenant_settings s ON s.tenant_id = c.tenant_id
+            WHERE r.tenant_id = %s AND r.id = %s AND r.status = 'pending'
+              AND r.sla_due_at > clock_timestamp()
+              AND q.notify_channel IS NOT NULL AND s.slack_workspace_id IS NOT NULL
+            """,
+            (credential.tenant_id, request_id),
+        )
+        if details is None:
+            raise HTTPException(409, "Approval has no pending Slack notification")
+        return details
+
+    @router.post("/approvals/{request_id}/notification")
+    def record_approval_notification(
+        request_id: UUID,
+        body: SlackDelivery,
+        credential: Annotated[Credential, Depends(poster)],
+    ) -> dict[str, str]:
+        saved = transition(
+            credential,
+            """
+            UPDATE public.approval_requests r
+               SET slack_channel = %s, slack_message_ts = %s
+              FROM public.cases c JOIN public.queues q
+                ON (q.tenant_id,q.id) = (c.tenant_id,c.queue_id)
+             WHERE r.tenant_id = %s AND r.id = %s AND r.status = 'pending'
+               AND (r.tenant_id,r.case_id) = (c.tenant_id,c.id)
+               AND q.notify_channel = %s AND r.sla_due_at > clock_timestamp()
+               AND (r.slack_message_ts IS NULL OR (r.slack_channel,r.slack_message_ts) = (%s,%s))
+             RETURNING r.id
+            """,
+            (
+                body.channel,
+                body.ts,
+                credential.tenant_id,
+                request_id,
+                body.channel,
+                body.channel,
+                body.ts,
+            ),
+        )
+        if saved is None:
+            raise HTTPException(409, "Slack delivery could not be recorded")
+        return {"status": "posted"}
 
     return router

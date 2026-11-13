@@ -671,6 +671,29 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
             expired_action + "/reconcile", headers=reconciler_headers, json=evidence
         )
         assert unknown.json() == {"status": "unknown_outcome"}
+        assert (
+            client.post(
+                expired_action + "/reconcile",
+                headers=reconciler_headers,
+                json={**evidence, "outcome": "absent"},
+            ).status_code
+            == 409
+        )
+        with psycopg.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user="switchboard_owner",
+            password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+            connect_timeout=3,
+        ) as owner:
+            verify_cluster(owner, "switchboard_owner")
+            owner.execute("ALTER TABLE public.actions DISABLE TRIGGER actions_enforce_rules")
+            owner.execute(
+                "UPDATE public.actions SET lease_expires_at=clock_timestamp()-interval '31 seconds' WHERE id=%s",
+                (action_ids[1],),
+            )
+            owner.execute("ALTER TABLE public.actions ENABLE TRIGGER actions_enforce_rules")
         final = client.post(
             expired_action + "/reconcile",
             headers=reconciler_headers,
