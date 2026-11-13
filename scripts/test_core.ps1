@@ -1,4 +1,8 @@
 $ErrorActionPreference = 'Stop'
+if ($args.Count -gt 1 -or ($args.Count -eq 1 -and $args[0] -ne '-WithN8n')) {
+    throw 'Usage: test_core.ps1 [-WithN8n]'
+}
+$withN8n = $args.Count -eq 1
 
 function Invoke-Docker {
     & docker --context desktop-linux @args
@@ -14,7 +18,8 @@ $passwordVars = @(
     'SWITCHBOARD_CORE_TEST_MARKER'
 )
 $testVars = $passwordVars + @('SWITCHBOARD_DB_HOST', 'SWITCHBOARD_DB_PORT', 'SWITCHBOARD_DB_NAME',
-    'SWITCHBOARD_CORE_TEST_GATEWAY', 'SWITCHBOARD_SLACK_APP_ID', 'SWITCHBOARD_SLACK_SIGNING_SECRET')
+    'SWITCHBOARD_CORE_TEST_GATEWAY', 'SWITCHBOARD_SLACK_APP_ID', 'SWITCHBOARD_SLACK_SIGNING_SECRET',
+    'SWITCHBOARD_TEST_N8N')
 $previous = @{}
 foreach ($name in $testVars) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 
@@ -28,6 +33,7 @@ try {
     }
     $env:SWITCHBOARD_SLACK_APP_ID = 'A000FIXTURE'
     $env:SWITCHBOARD_SLACK_SIGNING_SECRET = [Guid]::NewGuid().ToString('N')
+    $env:SWITCHBOARD_TEST_N8N = if ($withN8n) { '1' } else { '' }
     $python = Join-Path $repo '.venv/Scripts/python.exe'
     if (-not (Test-Path -LiteralPath $python)) { throw 'Create the workspace Python 3.12 virtualenv first' }
 

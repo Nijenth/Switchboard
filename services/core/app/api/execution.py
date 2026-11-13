@@ -147,7 +147,7 @@ def execution_router(
             (action_id, credential.principal, sha256(body.grant.encode("ascii")).digest()),
         )
         if dispatch is None:
-            raise HTTPException(409, "Grant cannot be consumed")
+            raise HTTPException(409, "Grant cannot be consumed; re-claim before dispatch")
         return dispatch
 
     @router.post("/{action_id}/complete")
@@ -199,6 +199,7 @@ def execution_router(
                      WHERE tenant_id = %s AND adapter = 'mock'
                        AND (status = 'unknown_outcome' OR
                             (status = 'executing' AND lease_expires_at <= clock_timestamp()))
+                       AND tool_key = 'send_reply'
                      ORDER BY lease_expires_at, id LIMIT 100) item
             """,
             (credential.tenant_id,),
@@ -212,10 +213,11 @@ def execution_router(
             SELECT coalesce(jsonb_agg(jsonb_build_object('action_id', item.id)), '[]'::jsonb)
               FROM (SELECT id FROM public.actions
                      WHERE tenant_id = %s AND adapter = 'mock' AND tool_key = 'send_reply'
-                       AND status = 'approved'
+                       AND (status = 'approved' OR (status = 'executing' AND claimed_by = %s
+                            AND lease_expires_at > clock_timestamp()))
                      ORDER BY created_at, id LIMIT 100) item
             """,
-            (credential.tenant_id,),
+            (credential.tenant_id, credential.principal),
         )
 
     @router.get("/approvals/pending")
@@ -231,6 +233,10 @@ def execution_router(
                      WHERE r.tenant_id = %s AND r.status = 'pending' AND r.slack_message_ts IS NULL
                        AND r.sla_due_at > clock_timestamp() AND q.notify_channel IS NOT NULL
                        AND s.slack_workspace_id IS NOT NULL
+                       AND (r.subject_type = 'draft' OR (r.subject_type = 'action' AND EXISTS (
+                         SELECT 1 FROM public.actions a WHERE (a.tenant_id,a.case_id,a.id) =
+                           (r.tenant_id,r.case_id,r.subject_id) AND a.tool_key = 'send_reply'
+                       )))
                      ORDER BY r.created_at,r.id LIMIT 100) item
             """,
             (credential.tenant_id,),
@@ -247,13 +253,22 @@ def execution_router(
             SELECT jsonb_build_object(
               'request_id', r.id, 'subject_type', r.subject_type, 'required_role', r.required_role,
               'channel', q.notify_channel, 'workspace', s.slack_workspace_id,
-              'posted_ts', r.slack_message_ts, 'deadline', r.sla_due_at
+              'posted_ts', r.slack_message_ts, 'deadline', r.sla_due_at,
+              'review', jsonb_strip_nulls(jsonb_build_object(
+                'tool', a.tool_key, 'amount', a.amount, 'currency', a.currency,
+                'recipient', d.recipient, 'subject', d.subject, 'body', d.body
+              ))
             )
             FROM public.approval_requests r
             JOIN public.cases c ON (c.tenant_id,c.id) = (r.tenant_id,r.case_id)
             JOIN public.queues q ON (q.tenant_id,q.id) = (c.tenant_id,c.queue_id)
             JOIN public.tenant_settings s ON s.tenant_id = c.tenant_id
+            LEFT JOIN public.actions a ON r.subject_type = 'action'
+              AND (a.tenant_id,a.case_id,a.id) = (r.tenant_id,r.case_id,r.subject_id)
+            LEFT JOIN public.drafts d ON r.subject_type = 'draft'
+              AND (d.tenant_id,d.case_id,d.id) = (r.tenant_id,r.case_id,r.subject_id)
             WHERE r.tenant_id = %s AND r.id = %s AND r.status = 'pending'
+              AND (d.id IS NOT NULL OR a.tool_key = 'send_reply')
               AND r.sla_due_at > clock_timestamp()
               AND q.notify_channel IS NOT NULL AND s.slack_workspace_id IS NOT NULL
             """,

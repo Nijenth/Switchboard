@@ -1,0 +1,251 @@
+{
+  "id": "SwitchboardSend1",
+  "name": "wf_tool_send_reply",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardSend1-1",
+      "name": "Receive action ID",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "SwitchboardSend1-2",
+      "name": "Claim action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $('Receive action ID').item.json.action_id + '/claim' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSend1-3",
+      "name": "Keep successful claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().flatMap((item, index) => {\n  if (item.json.statusCode === 409) return [];\n  if (item.json.statusCode !== 200) throw new Error('Core claim failed');\n  return [{json: item.json.body, pairedItem: {item: index}}];\n});"
+      }
+    },
+    {
+      "id": "SwitchboardSend1-4",
+      "name": "Consume grant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $('Receive action ID').item.json.action_id + '/consume' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({grant: $json.grant}) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSend1-5",
+      "name": "Check dispatch contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().flatMap((item, index) => {\n  if (item.json.statusCode === 409) return [];\n  const body = item.json.body;\n  if (item.json.statusCode !== 200 || body.tool_key !== 'send_reply' || body.adapter !== 'mock' || !body.draft)\n    throw new Error('Core returned an unexpected mock dispatch');\n  return [{json: body, pairedItem: {item: index}}];\n});"
+      }
+    },
+    {
+      "id": "SwitchboardSend1-6",
+      "name": "Write mock send receipt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH added AS (\n  INSERT INTO demo.outbound_receipts (tenant_id, action_id, idempotency_key)\n  SELECT $1::uuid, $2::uuid, $3::text WHERE clock_timestamp() < $4::timestamptz\n  ON CONFLICT (tenant_id, action_id) DO NOTHING RETURNING external_ref\n)\nSELECT external_ref::text FROM added\nUNION ALL\nSELECT external_ref::text FROM demo.outbound_receipts\nWHERE tenant_id=$1::uuid AND action_id=$2::uuid AND idempotency_key=$3::text\nLIMIT 1",
+        "options": {
+          "queryReplacement": "={{ [$json.destination, $('Receive action ID').item.json.action_id, $json.idempotency_key, $json.expires_at] }}"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSend1-7",
+      "name": "Complete consumed grant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: $json.external_ref}) }}",
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Receive action ID": {
+      "main": [
+        [
+          {
+            "node": "Claim action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim action": {
+      "main": [
+        [
+          {
+            "node": "Keep successful claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep successful claims": {
+      "main": [
+        [
+          {
+            "node": "Consume grant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consume grant": {
+      "main": [
+        [
+          {
+            "node": "Check dispatch contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check dispatch contract": {
+      "main": [
+        [
+          {
+            "node": "Write mock send receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write mock send receipt": {
+      "main": [
+        [
+          {
+            "node": "Complete consumed grant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

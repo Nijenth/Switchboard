@@ -1,0 +1,260 @@
+{
+  "id": "SwitchboardSlack1",
+  "name": "wf_approval_slack",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardSlack1-1",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSlack1-2",
+      "name": "List pending approvals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/approvals/pending' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_APPROVAL_POSTER_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSlack1-3",
+      "name": "Get approval notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/approvals/' + $json.request_id + '/notification' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_APPROVAL_POSTER_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSlack1-build",
+      "name": "Build review buttons",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map((item, index) => {\n  const approval = item.json;\n  if (approval.posted_ts) return {json: {}, pairedItem: {item: index}};\n  const text = 'Switchboard ' + approval.subject_type + ' review ' + approval.request_id +\n    ' (' + approval.required_role + '). Deadline ' + approval.deadline;\n  const review = approval.review;\n  const detail = review.body !== undefined\n    ? 'To: ' + review.recipient + '\\nSubject: ' + (review.subject ?? '') + '\\n' + review.body\n    : [review.tool, review.amount, review.currency].filter(x => x != null).join(' ');\n  const parts = Array.from(detail);\n  if (parts.length > 24000) throw new Error('Approval must be reviewed in core because it exceeds Slack limits');\n  const sections = [];\n  for (let offset = 0; offset < parts.length; offset += 2800) {\n    sections.push({type: 'section', text: {type: 'plain_text', text: parts.slice(offset, offset + 2800).join('')}});\n  }\n  const buttons = ['approve', 'reject', 'escalate'].map(decision => ({\n    type: 'button', action_id: 'switchboard_' + decision,\n    text: {type: 'plain_text', text: decision}, value: approval.request_id\n  }));\n  return {json: {channel: approval.channel, text, blocks: [\n    {type: 'section', text: {type: 'plain_text', text}}, ...sections,\n    {type: 'actions', elements: buttons}\n  ]}, pairedItem: {item: index}};\n}).filter(item => item.json.channel);"
+      }
+    },
+    {
+      "id": "SwitchboardSlack1-4",
+      "name": "Post review buttons",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SWITCHBOARD_SLACK_POST_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_SLACK_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardSlack1-5",
+      "name": "Require Slack delivery confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map((item, index) => {\n  if (item.json.ok !== true || !item.json.channel || !item.json.ts) throw new Error('Slack did not confirm delivery');\n  return {json: {channel: item.json.channel, ts: item.json.ts}, pairedItem: {item: index}};\n});"
+      }
+    },
+    {
+      "id": "SwitchboardSlack1-6",
+      "name": "Record Slack delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/approvals/' + $('Get approval notification').item.json.request_id + '/notification' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_APPROVAL_POSTER_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({channel: $json.channel, ts: $json.ts}) }}",
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "List pending approvals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List pending approvals": {
+      "main": [
+        [
+          {
+            "node": "Get approval notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get approval notification": {
+      "main": [
+        [
+          {
+            "node": "Build review buttons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post review buttons": {
+      "main": [
+        [
+          {
+            "node": "Require Slack delivery confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Require Slack delivery confirmation": {
+      "main": [
+        [
+          {
+            "node": "Record Slack delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build review buttons": {
+      "main": [
+        [
+          {
+            "node": "Post review buttons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

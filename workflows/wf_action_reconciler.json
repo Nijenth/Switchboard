@@ -1,0 +1,183 @@
+{
+  "id": "SwitchboardReconcile1",
+  "name": "wf_action_reconciler",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardReconcile1-1",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "SwitchboardReconcile1-2",
+      "name": "List expired mock sends",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/reconciliation/pending' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_RECONCILER_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardReconcile1-3",
+      "name": "Look up mock receipt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT $2::uuid AS action_id,\n       (SELECT external_ref::text FROM demo.outbound_receipts WHERE tenant_id=$1::uuid AND action_id=$2::uuid) AS external_ref",
+        "options": {
+          "queryReplacement": "={{ [$json.tenant_id, $json.action_id] }}"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardReconcile1-4",
+      "name": "Submit lookup evidence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $json.action_id + '/reconcile' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_RECONCILER_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.external_ref ? {outcome: 'found', lookup_ref: 'mock-outbound:' + $json.action_id, external_ref: $json.external_ref} : {outcome: 'absent', lookup_ref: 'mock-outbound:' + $json.action_id}) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "SwitchboardReconcile1-5",
+      "name": "Check reconciliation response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().flatMap((item, index) => {\n  if (item.json.statusCode === 409) return [];\n  if (item.json.statusCode !== 200) throw new Error('Core reconciliation failed');\n  return [{json: {status: item.json.body.status}, pairedItem: {item: index}}];\n});"
+      }
+    }
+  ],
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "List expired mock sends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List expired mock sends": {
+      "main": [
+        [
+          {
+            "node": "Look up mock receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look up mock receipt": {
+      "main": [
+        [
+          {
+            "node": "Submit lookup evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit lookup evidence": {
+      "main": [
+        [
+          {
+            "node": "Check reconciliation response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}
