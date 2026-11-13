@@ -1,0 +1,19 @@
+services:
+  db-check:
+    image: pgvector/pgvector:0.8.7-pg16-bookworm
+    profiles: [test]
+    user: postgres
+    network_mode: none
+    working_dir: /switchboard
+    entrypoint: ["bash", "scripts/check_db"]
+    environment:
+      SWITCHBOARD_DB_OWNER_PASSWORD: ${SWITCHBOARD_DB_OWNER_PASSWORD:-}
+      SWITCHBOARD_CORE_PASSWORD: ${SWITCHBOARD_CORE_PASSWORD:-}
+      SWITCHBOARD_CONFIG_LOADER_PASSWORD: ${SWITCHBOARD_CONFIG_LOADER_PASSWORD:-}
+      SWITCHBOARD_N8N_MOCK_PASSWORD: ${SWITCHBOARD_N8N_MOCK_PASSWORD:-}
+      SWITCHBOARD_REPORTING_PASSWORD: ${SWITCHBOARD_REPORTING_PASSWORD:-}
+    volumes:
+      - ./db:/switchboard/db:ro
+      - ./scripts:/switchboard/scripts:ro
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,mode=1777
