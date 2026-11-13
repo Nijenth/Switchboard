@@ -573,7 +573,7 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
             ]
         ),
     )
-    action_ids = [uuid4(), uuid4()]
+    action_ids = [uuid4(), uuid4(), uuid4()]
     with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
         set_northwind(conn)
         for action_id in action_ids:
@@ -593,7 +593,9 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
             )
 
     with TestClient(create_app(config)) as client:
-        action, expired_action = (f"/actions/{action_id}" for action_id in action_ids)
+        action, expired_action, changed_action = (
+            f"/actions/{action_id}" for action_id in action_ids
+        )
         worker_headers, other_headers, reconciler_headers = (
             bearer(tokens[principal]) for principal in ("first", "second", "reconciler")
         )
@@ -676,6 +678,32 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
         )
         assert final.json() == {"status": "failed"}
         assert client.post(expired_action + "/claim", headers=worker_headers).status_code == 409
+
+        claim = client.post(changed_action + "/claim", headers=worker_headers)
+        assert claim.status_code == 200
+        with psycopg.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user="switchboard_config_loader",
+            password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+            connect_timeout=3,
+        ) as loader:
+            verify_cluster(loader, "switchboard_config_loader")
+            loader.execute("UPDATE public.tenants SET status='suspended' WHERE id=%s", (NORTHWIND,))
+            loader.commit()
+            try:
+                denied = client.post(
+                    changed_action + "/consume",
+                    headers=worker_headers,
+                    json={"grant": claim.json()["grant"]},
+                )
+                assert denied.status_code == 409
+            finally:
+                loader.execute(
+                    "UPDATE public.tenants SET status='active' WHERE id=%s", (NORTHWIND,)
+                )
+                loader.commit()
 
 
 def test_audit_checkpoint_api_checks_previous_hash(settings: Settings) -> None:

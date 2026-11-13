@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from psycopg import Connection, DataError, Error, IntegrityError, OperationalError
 from psycopg.errors import InsufficientPrivilege, RaiseException
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 GrantToken = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Reference = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[^\x00]+$")]
@@ -58,7 +58,10 @@ def execution_router(
     pool: ConnectionPool[Connection], config: str | None, bearer_token: Callable[[str | None], str]
 ) -> APIRouter:
     router = APIRouter(prefix="/actions")
-    credentials = TypeAdapter(list[Credential]).validate_json(config or "[]")
+    try:
+        credentials = TypeAdapter(list[Credential]).validate_json(config or "[]")
+    except ValidationError:
+        raise ValueError("Invalid execution credential configuration") from None
     if len({entry.token for entry in credentials}) != len(credentials):
         raise ValueError("Execution credentials must be unique")
     if len({(entry.tenant_id, entry.role, entry.principal) for entry in credentials}) != len(

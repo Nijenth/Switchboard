@@ -304,15 +304,18 @@ POST /understand             classify + extract with the case's pack
 POST /retrieve               RAG search scoped to tenant + pack
 POST /decide                 run the decision pipeline → policy_decision (+ proposed actions)
 POST /actions/{id}/claim     atomically claim an approved/auto-allowed action → single-use execution grant
-POST /actions/{id}/complete  record result of an execution grant (executed | failed + external_ref)
-POST /actions/reconcile      lease-expired 'executing' → unknown_outcome → verify externally → final state
+POST /actions/{id}/consume   consume a mock grant once and return the approved connector payload
+POST /actions/{id}/complete  record the external reference for a consumed grant
+POST /actions/{id}/reconcile expire a fixed lease and record the adapter lookup evidence
 POST /drafts                 generate an outbound draft with citations + output guardrails
 POST /approvals/{id}/decide  record a reviewer decision (role-checked)
+POST /approvals/slack        verify a signed Slack button interaction and record its decision
+POST /audit/verify           verify the full chain and an independently stored checkpoint
 POST /documents              upload a file → MinIO + documents row
 GET  /health                 dependency checks (db, redis, minio, litellm)
 ```
 
-All endpoints require a service token, take and return `trace_id`, and validate with Pydantic.
+Core authenticates each endpoint with a credential scoped to its purpose. The Slack callback verifies the original Slack signature. API request models validate input with Pydantic.
 
 ---
 
@@ -388,8 +391,8 @@ read-only to `app_core`. They change only through Git → CI → `load_packs`.
 - Audit log is append-only and hash-chained. `verify_audit_chain()` detects edits.
 
 ### Known limits (do not claim otherwise)
-- A PostgreSQL **superuser or the table owner can bypass triggers and RLS**. Running services use restricted logins. The owner-run verifier detects edits to the chain. A restricted full-chain verifier and an independently protected checkpoint are planned.
-- Reconciliation evidence, reviewer authentication, and execution grants need application and workflow wiring before mock outbound execution is enabled.
+- A PostgreSQL **superuser or the table owner can bypass triggers and RLS**. Running services use restricted logins. The restricted verifier compares the chain to a checkpoint held outside PostgreSQL. A deployment must protect the checkpoint storage under a separate identity.
+- The signed Slack callback, mock grant API, and reconciliation evidence transitions are implemented. Mock connector workflows still need to perform the actual lookup, and the audit checkpoint needs a deployment schedule.
 - DB invariants prove the database refuses bad states. They do **not** prove the application, the n8n
   workflows or real integrations are safe. Those need their own tests (§12).
 - External APIs without idempotency keys (some CRMs) can still duplicate on a crash. The reconciler

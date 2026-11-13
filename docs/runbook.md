@@ -41,3 +41,17 @@ Core must verify a reviewer interaction and resolve the reviewer before calling 
 Automatic claims require the current case decision to allow the tool. Registered reads are exempt from this prior decision requirement and still require an enabled pack and verified identity when the registry requires it. External communications require a same-case authorized draft. Failed actions cannot be reclaimed. Leave ambiguous attempts for reconciliation and keep automated retries disabled until the reconciliation path records the evidence needed to authorize a retry.
 
 If migration `004_execution_authorization.sql` reports existing execution records, stop. It requires an explicit migration plan to preserve old approvals and payload bindings. The current test runner uses a fresh cluster with no execution records.
+
+### Slack reviewer callback
+
+Inject `SWITCHBOARD_SLACK_APP_ID` and `SWITCHBOARD_SLACK_SIGNING_SECRET` into core. Configure the tenant's `slack_workspace_id` and its staff `slack_user_id` values through the configuration role. Persist the original channel and message timestamp on each approval request before accepting buttons. Use `POST /approvals/slack` with the original signed form body. The button IDs are `switchboard_approve`, `switchboard_reject`, and `switchboard_escalate`. Their value is the request UUID.
+
+### Mock execution and reconciliation
+
+Inject `SWITCHBOARD_EXECUTION_CREDENTIALS` as a JSON array of entries with `tenant_id`, `role`, `principal`, and a distinct 64-character lowercase hex `token`. Use separate principals for workers and reconcilers. Keep the API on a protected transport and keep grants and response bodies out of execution logs.
+
+A worker claims through `POST /actions/{id}/claim`, then sends the returned grant to `/consume` to obtain the approved payload. After the mock call, send the grant and `external_ref` to `/complete`. The lease lasts 45 seconds with no renewal. An expired, lost, or ambiguous attempt goes through `/reconcile` using the reconciler credential. Supply `outcome` and `lookup_ref` for each lookup result, and include `external_ref` for a found result. The adapter's lookup must establish the result before the reconciler submits it. A confirmed absence ends the attempt without permitting a new claim.
+
+### Verify and checkpoint the audit chain
+
+Set a distinct `SWITCHBOARD_AUDIT_TOKEN` on core and the checkpoint process. Set `SWITCHBOARD_AUDIT_URL` to the core `/audit/verify` URL. Give the checkpoint process a private directory outside the database and core service's writable storage. On a fresh verified deployment, initialize once with `python scripts/checkpoint_audit.py --initialize <history-path>`. Subsequent runs omit `--initialize`. On an HTTP 409 or missing history, preserve the existing history and investigate. An operator should clear a stale lock only after confirming that no checkpoint process is active. Configure the n8n schedule and protected storage before relying on the checkpoint in a deployment.
