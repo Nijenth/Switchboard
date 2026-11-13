@@ -26,3 +26,14 @@ INSERT INTO messages (id, tenant_id, case_id, endpoint_id, trace_id, idempotency
 SELECT '92000000-0000-0000-0000-000000000002', tenant_id, id, endpoint_id,
        gen_random_uuid(), 'email:test-1', 'inbound', 'email', 'Invoice attached'
   FROM cases WHERE id = '92000000-0000-0000-0000-000000000001';
+
+INSERT INTO ingress_credentials (token_digest, tenant_id, endpoint_id, expires_at, revoked_at)
+SELECT sha256(convert_to(fixture.label, 'UTF8')), e.tenant_id, e.id, fixture.expiry, fixture.revoked_at
+  FROM (VALUES
+    ('invoice-fixture', 'invoices@northwind.example', now() + interval '1 hour', NULL),
+    ('shared-fixture', 'hello@northwind.example', now() + interval '1 hour', NULL),
+    ('disabled-fixture', 'support@acme.example', now() + interval '1 hour', NULL),
+    ('expired-fixture', 'invoices@northwind.example', now() - interval '1 hour', NULL),
+    ('revoked-fixture', 'invoices@northwind.example', now() + interval '1 hour', now())
+  ) AS fixture(label, address, expiry, revoked_at)
+  JOIN channel_endpoints e ON e.channel = 'email' AND e.address = fixture.address;

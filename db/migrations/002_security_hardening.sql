@@ -47,6 +47,7 @@ ALTER TABLE approval_requests   ADD CONSTRAINT approval_requests_tenant_id_key  
 ALTER TABLE knowledge_documents ADD CONSTRAINT knowledge_documents_tenant_id_key UNIQUE (tenant_id, id);
 
 ALTER TABLE channel_endpoints  ADD CONSTRAINT channel_endpoints_tenant_pack_fk FOREIGN KEY (tenant_id, tenant_pack_id) REFERENCES tenant_packs (tenant_id, id);
+ALTER TABLE ingress_credentials ADD CONSTRAINT ingress_credentials_endpoint_fk FOREIGN KEY (tenant_id, endpoint_id) REFERENCES channel_endpoints (tenant_id, id) ON DELETE CASCADE;
 ALTER TABLE contacts           ADD CONSTRAINT contacts_org_tenant_fk           FOREIGN KEY (tenant_id, organization_id) REFERENCES organizations (tenant_id, id);
 ALTER TABLE cases              ADD CONSTRAINT cases_tenant_pack_tenant_fk      FOREIGN KEY (tenant_id, tenant_pack_id)  REFERENCES tenant_packs (tenant_id, id);
 ALTER TABLE cases              ADD CONSTRAINT cases_contact_tenant_fk          FOREIGN KEY (tenant_id, contact_id)      REFERENCES contacts (tenant_id, id);
@@ -441,6 +442,9 @@ GRANT SELECT, INSERT ON audit_log TO app_core;                                  
 GRANT SELECT, INSERT, UPDATE ON tenants, tenant_settings, staff_users, queues, tenant_packs,
                 channel_endpoints, packs, pack_intents, tools, pack_tools,
                 knowledge_documents, knowledge_chunks, eval_cases TO app_config_loader;
+ALTER TABLE ingress_credentials ENABLE ROW LEVEL SECURITY;
+CREATE POLICY ingress_credentials_manage ON ingress_credentials TO app_config_loader USING (true) WITH CHECK (true);
+GRANT SELECT, INSERT, UPDATE (revoked_at) ON ingress_credentials TO app_config_loader;
 GRANT SELECT, INSERT ON audit_log TO app_config_loader;
 
 -- app_n8n_mock: n8n's mock tool sub-workflows. Demo schema only; zero access to engine tables.
@@ -457,18 +461,20 @@ GRANT EXECUTE ON FUNCTION app_current_tenant() TO app_core, app_config_loader, a
 
 -- Ingest must resolve tenant from an inbound address BEFORE tenant context exists.
 -- SECURITY DEFINER exposes exactly this lookup and nothing else.
-CREATE OR REPLACE FUNCTION resolve_channel_endpoint(p_channel text, p_address text)
-RETURNS TABLE (tenant_id uuid, tenant_pack_id uuid, endpoint_id uuid, pack_id uuid)
+CREATE FUNCTION resolve_channel_endpoint(p_token_digest bytea)
+RETURNS TABLE (tenant_id uuid, tenant_pack_id uuid, endpoint_id uuid, pack_id uuid, channel text, address text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
-  SELECT e.tenant_id, e.tenant_pack_id, e.id, tp.pack_id
-    FROM public.channel_endpoints e
+  SELECT e.tenant_id, e.tenant_pack_id, e.id, tp.pack_id, e.channel, e.address
+    FROM public.ingress_credentials credential
+    JOIN public.channel_endpoints e ON e.tenant_id = credential.tenant_id AND e.id = credential.endpoint_id
     JOIN public.tenants t ON t.id = e.tenant_id
     LEFT JOIN public.tenant_packs tp ON tp.tenant_id = e.tenant_id AND tp.id = e.tenant_pack_id
-   WHERE e.channel = p_channel AND e.address = p_address AND e.active AND t.status = 'active'
+   WHERE credential.token_digest = p_token_digest AND credential.revoked_at IS NULL
+     AND credential.expires_at > statement_timestamp() AND e.active AND t.status = 'active'
      AND (e.tenant_pack_id IS NULL OR tp.enabled)
 $$;
-REVOKE ALL ON FUNCTION resolve_channel_endpoint(text, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION resolve_channel_endpoint(text, text) TO app_core;
+REVOKE ALL ON FUNCTION resolve_channel_endpoint(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION resolve_channel_endpoint(bytea) TO app_core;
 
 -- Enable RLS + policies on every tenant-scoped table.
 DO $$

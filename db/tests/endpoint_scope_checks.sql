@@ -2,6 +2,15 @@ INSERT INTO channel_endpoints (id, tenant_id, channel, address) VALUES
   ('96000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001','email','one@scope.example'),
   ('96000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000001','email','two@scope.example');
 
+SELECT pg_temp.expect_error('credential endpoint must belong to its tenant',
+  $q$INSERT INTO ingress_credentials (token_digest, tenant_id, endpoint_id, expires_at)
+     VALUES (sha256(convert_to('wrong-tenant','UTF8')),'91000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000001',now() + interval '1 hour')$q$,
+  'ingress_credentials_endpoint_fk');
+SELECT pg_temp.expect_error('credential requires a SHA-256-sized digest',
+  $q$INSERT INTO ingress_credentials (token_digest, tenant_id, endpoint_id, expires_at)
+     VALUES (decode('00','hex'),'10000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000001',now() + interval '1 hour')$q$,
+  'ingress_credentials_token_digest_check');
+
 SELECT pg_temp.expect_ok('same provider thread ID is independent across endpoints',
   $q$INSERT INTO cases (id, tenant_id, channel, endpoint_id, external_thread_id) VALUES
      ('96000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000001','email','96000000-0000-0000-0000-000000000001','endpoint-thread'),

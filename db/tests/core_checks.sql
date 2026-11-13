@@ -10,21 +10,29 @@ SELECT pg_temp.expect_value('core cannot assume the owner or bootstrap role',
 SELECT pg_temp.expect_value('no tenant context → sees zero cases (fail closed)',
   $q$SELECT count(*)::text FROM cases$q$, '0');
 
-SELECT pg_temp.expect_value('ingest can resolve tenant from inbound address without context',
-  $q$SELECT tenant_id::text FROM resolve_channel_endpoint('email','invoices@northwind.example')$q$,
+SELECT pg_temp.expect_value('ingest can resolve tenant from its credential without context',
+  $q$SELECT tenant_id::text FROM resolve_channel_endpoint(sha256(convert_to('invoice-fixture','UTF8')))$q$,
   '10000000-0000-0000-0000-000000000001');
 
 SELECT pg_temp.expect_value('resolver returns the enabled pack version',
-  $q$SELECT pack_id::text FROM resolve_channel_endpoint('email','invoices@northwind.example')$q$,
+  $q$SELECT pack_id::text FROM resolve_channel_endpoint(sha256(convert_to('invoice-fixture','UTF8')))$q$,
   '30000000-0000-0000-0000-000000000003');
 SELECT pg_temp.expect_value('resolver rejects a disabled mapped pack',
-  $q$SELECT count(*)::text FROM resolve_channel_endpoint('email','support@acme.example')$q$, '0');
+  $q$SELECT count(*)::text FROM resolve_channel_endpoint(sha256(convert_to('disabled-fixture','UTF8')))$q$, '0');
 SELECT pg_temp.expect_value('resolver allows a shared inbox without a pack',
   $q$SELECT (pack_id IS NULL AND tenant_pack_id IS NULL)::text
-       FROM resolve_channel_endpoint('email','hello@northwind.example')$q$, 'true');
+       FROM resolve_channel_endpoint(sha256(convert_to('shared-fixture','UTF8')))$q$, 'true');
+SELECT pg_temp.expect_value('resolver rejects an unknown credential',
+  $q$SELECT count(*)::text FROM resolve_channel_endpoint(sha256(convert_to('unknown-fixture','UTF8')))$q$, '0');
+SELECT pg_temp.expect_value('resolver rejects an expired credential',
+  $q$SELECT count(*)::text FROM resolve_channel_endpoint(sha256(convert_to('expired-fixture','UTF8')))$q$, '0');
+SELECT pg_temp.expect_value('resolver rejects a revoked credential',
+  $q$SELECT count(*)::text FROM resolve_channel_endpoint(sha256(convert_to('revoked-fixture','UTF8')))$q$, '0');
+SELECT pg_temp.expect_error('core cannot read credential digests',
+  $q$SELECT count(*) FROM ingress_credentials$q$, 'permission denied');
 SELECT pg_temp.expect_value('privileged functions use a trusted search path',
   $q$SELECT count(*)::text FROM pg_proc
-      WHERE oid IN ('public.resolve_channel_endpoint(text,text)'::regprocedure,
+      WHERE oid IN ('public.resolve_channel_endpoint(bytea)'::regprocedure,
                     'public.audit_log_chain()'::regprocedure)
         AND 'search_path=pg_catalog, public, pg_temp' = ANY(proconfig)$q$, '2');
 

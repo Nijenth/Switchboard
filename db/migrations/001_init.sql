@@ -142,6 +142,14 @@ CREATE TABLE channel_endpoints (
   UNIQUE (channel, address)                  -- globally unique so ingest can resolve the tenant
 );
 
+CREATE TABLE ingress_credentials (
+  token_digest bytea PRIMARY KEY CHECK (octet_length(token_digest) = 32),
+  tenant_id    uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  endpoint_id  uuid NOT NULL,
+  expires_at   timestamptz NOT NULL,
+  revoked_at   timestamptz
+);
+
 -- =====================================================================
 -- 3. CONTACTS & ORGANIZATIONS (generic people/companies)
 -- =====================================================================
