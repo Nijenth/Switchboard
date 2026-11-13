@@ -19,6 +19,8 @@ class Settings:
     slack_signing_secret: str | None = field(default=None, repr=False)
     execution_credentials: str | None = field(default=None, repr=False)
     audit_token: str | None = field(default=None, repr=False)
+    understand_credentials: str | None = field(default=None, repr=False)
+    offline_gateway_url: str | None = None
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -32,6 +34,8 @@ class Settings:
             slack_signing_secret=environ.get("SWITCHBOARD_SLACK_SIGNING_SECRET"),
             execution_credentials=environ.get("SWITCHBOARD_EXECUTION_CREDENTIALS"),
             audit_token=environ.get("SWITCHBOARD_AUDIT_TOKEN"),
+            understand_credentials=environ.get("SWITCHBOARD_UNDERSTAND_CREDENTIALS"),
+            offline_gateway_url=environ.get("SWITCHBOARD_OFFLINE_GATEWAY_URL"),
         )
 
     def __post_init__(self) -> None:

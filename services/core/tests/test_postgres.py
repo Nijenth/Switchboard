@@ -191,6 +191,125 @@ def test_ingest_rejects_changed_content_for_an_existing_key(
     assert client.post("/ingest", json=payload, headers=headers).json() == retry.json()
 
 
+@pytest.mark.parametrize(
+    ("marker", "first_status", "expected_reason"),
+    [
+        ("", "success", "policy_review"),
+        ("[fixture:invalid]", "schema_invalid", "policy_review"),
+        ("[fixture:error]", "error", "policy_review"),
+        ("[fixture:timeout]", "timeout", "policy_review"),
+        ("[fixture:invalid-both]", "schema_invalid", "classification_unavailable"),
+    ],
+)
+def test_offline_understand(
+    client: TestClient,
+    credentials: dict[str, str],
+    settings: Settings,
+    marker: str,
+    first_status: str,
+    expected_reason: str,
+) -> None:
+    if not settings.offline_gateway_url:
+        pytest.skip("run scripts/test_core.sh --offline-ai")
+    payload = make_payload(SUPPORT)
+    payload["body_text"] = f"Please check order NW-1199. {marker}"
+    response = client.post("/ingest", json=payload, headers=bearer(credentials[SUPPORT]))
+    assert response.status_code == 200
+    delivery = response.json()
+    token = token_hex(32)
+    scoped = replace(
+        settings, understand_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": token}])
+    )
+    with TestClient(create_app(scoped)) as api:
+        result = api.post(
+            "/understand",
+            json={key: delivery[key] for key in ("case_id", "message_id")},
+            headers=bearer(token),
+        )
+    assert result.status_code == 200
+    assert result.json()["trace_id"] == delivery["trace_id"]
+    assert result.json()["reason"] == expected_reason
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        rows = conn.execute(
+            """
+            SELECT step,provider,used_fallback,status FROM public.ai_runs
+            WHERE tenant_id=%s AND trace_id=%s ORDER BY created_at
+            """,
+            (NORTHWIND, delivery["trace_id"]),
+        ).fetchall()
+    assert rows[0] == ("classify", "openai", False, first_status)
+    if marker:
+        assert rows[1] == (
+            "classify",
+            "anthropic",
+            True,
+            "schema_invalid" if marker == "[fixture:invalid-both]" else "success",
+        )
+
+
+def test_offline_budget_blocks_before_gateway(settings: Settings) -> None:
+    if not settings.offline_gateway_url:
+        pytest.skip("run scripts/test_core.sh --offline-ai")
+    from app.adapters.ai import OfflineGateway
+    from app.ai_accounting import Accounting
+    from app.understanding import StopAttempts
+
+    # The disabled fixture tenant has no tenant_settings row.
+    trace_id = uuid4()
+    with create_pool(settings, max_size=1) as pool:
+        accounting = Accounting(
+            pool, OfflineGateway(settings.offline_gateway_url), ACME, trace_id, "Fixture", "openai"
+        )
+        with pytest.raises(StopAttempts):
+            accounting.attempt("classify", "openai", "v1", "", {})
+        assert accounting.blocked
+        with pool.connection() as conn, conn.transaction():
+            verify_cluster(conn, "switchboard_core")
+            conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(ACME),))
+            run = conn.execute(
+                "SELECT status, accounting_pending FROM public.ai_runs WHERE tenant_id=%s AND trace_id=%s",
+                (ACME, trace_id),
+            ).fetchone()
+            assert run == ("budget_blocked", False)
+
+
+def test_offline_falls_back_from_anthropic(settings: Settings) -> None:
+    if not settings.offline_gateway_url:
+        pytest.skip("run scripts/test_core.sh --offline-ai")
+    from app.adapters.ai import OfflineGateway
+    from app.ai_accounting import Accounting
+    from app.understanding import understand
+
+    trace = uuid4()
+    with create_pool(settings, max_size=1) as pool:
+        with pool.connection() as conn:
+            verify_cluster(conn, "switchboard_core")
+            row = conn.execute(
+                "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=1"
+            ).fetchone()
+        assert row is not None
+        accounting = Accounting(
+            pool,
+            OfflineGateway(settings.offline_gateway_url),
+            NORTHWIND,
+            trace,
+            "Please check NW-1199. [fixture:anthropic-error]",
+            "anthropic",
+        )
+        result = understand(row[0], accounting.redacted, "anthropic", accounting.attempt)
+        assert result.extraction == {"order_number": "NW-1199"}
+        with pool.connection() as conn, conn.transaction():
+            conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+            runs = conn.execute(
+                """SELECT provider, status, used_fallback FROM public.ai_runs
+                   WHERE tenant_id=%s AND trace_id=%s AND step='classify' ORDER BY created_at""",
+                (NORTHWIND, trace),
+            ).fetchall()
+        assert runs == [("anthropic", "error", False), ("openai", "success", True)]
+
+
 def test_ingest_attaches_threads_and_scopes_duplicates_by_endpoint(
     client: TestClient, credentials: dict[str, str]
 ) -> None:

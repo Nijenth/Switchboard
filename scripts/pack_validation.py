@@ -57,6 +57,7 @@ class Pack:
     cases: list[dict[str, Any]]
     knowledge: list[tuple[dict[str, str], str]]
     checksum: str
+    assets: dict[str, Any]
 
 
 def validate(value: Any, schema_name: str, label: str) -> None:
@@ -210,15 +211,20 @@ def read_pack(root: Path, registry: dict[str, dict[str, Any]]) -> Pack:
         fields.update(
             f"checks.{name}" for name in tool.get("output_schema", {}).get("properties", {})
         )
+    assets: dict[str, Any] = {"prompts": {}}
     if extraction := config.get("extraction"):
-        properties = read_contract(reference(root, extraction["schema"], "schemas", ".json"))
+        schema_path = reference(root, extraction["schema"], "schemas", ".json")
+        properties = read_contract(schema_path)
+        assets["extraction_schema"] = json.loads(schema_path.read_text(encoding="utf-8"))
         if not set(extraction["required_fields"]) <= properties:
             raise PackError(f"{root}/pack.yaml: unknown required extraction field")
         fields.update(f"extraction.{name}" for name in properties)
     for name in config.get("output_schemas", {}).values():
         read_contract(reference(root, name, "schemas", ".json"))
-    for name in config.get("prompts", {}).values():
-        reference(root, name, "prompts", ".md")
+    for step, name in config.get("prompts", {}).items():
+        assets["prompts"][step] = reference(root, name, "prompts", ".md").read_text(
+            encoding="utf-8"
+        )
     knowledge = [
         (
             entry,
@@ -251,6 +257,7 @@ def read_pack(root: Path, registry: dict[str, dict[str, Any]]) -> Pack:
         cases,
         knowledge,
         hashlib.sha256(digest.encode()).hexdigest(),
+        assets,
     )
 
 

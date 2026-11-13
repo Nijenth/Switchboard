@@ -82,7 +82,7 @@ def publish(conn: psycopg.Connection[Any], pack: Pack) -> None:
             config["name"],
             config["description"],
             pack.checksum,
-            Jsonb({**config, "rules": pack.rules, "tools": pack.tools}),
+            Jsonb({**config, "rules": pack.rules, "tools": pack.tools, "assets": pack.assets}),
         ),
     )
     for intent in config["intents"]:
