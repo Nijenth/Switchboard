@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 
-db_psql() {
-    PGPASSWORD="${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}" \
+db_psql_as() {
+    local username=$1 password=$2 database=$3
+    shift 3
+    PGPASSWORD="$password" \
         psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
         --host="${SWITCHBOARD_DB_SOCKET:?Run through scripts/check_db}" \
-        --port=5432 --username=switchboard_owner --dbname=switchboard_test "$@"
+        --port=5432 --username="$username" --dbname="$database" "$@"
+}
+
+db_psql() {
+    db_psql_as switchboard_owner "${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}" switchboard_test "$@"
 }
 
 apply_db_sql() {

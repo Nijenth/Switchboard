@@ -368,15 +368,7 @@ END $$;
 -- =====================================================================
 -- B + C. ROLES, PRIVILEGES, ROW-LEVEL SECURITY
 -- =====================================================================
--- Group roles (NOLOGIN). Login users are created per environment by scripts/create_db_users
--- with passwords from env vars, then granted one of these roles.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_core')          THEN CREATE ROLE app_core NOLOGIN; END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_config_loader') THEN CREATE ROLE app_config_loader NOLOGIN; END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_n8n_mock')      THEN CREATE ROLE app_n8n_mock NOLOGIN; END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_reporting')     THEN CREATE ROLE app_reporting NOLOGIN; END IF;
-END $$;
+-- The bootstrap step creates the group and login roles before running this migration.
 
 -- Start from zero on tables. (Function EXECUTE stays default: extension functions such as
 -- gen_random_uuid() and vector operators must remain callable. Privileged functions are

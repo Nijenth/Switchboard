@@ -3,14 +3,16 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/db_common.sh
 
+: "${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}"
 : "${SWITCHBOARD_CORE_PASSWORD:?Missing core password}"
 : "${SWITCHBOARD_CONFIG_LOADER_PASSWORD:?Missing config loader password}"
 : "${SWITCHBOARD_N8N_MOCK_PASSWORD:?Missing n8n mock password}"
 : "${SWITCHBOARD_REPORTING_PASSWORD:?Missing reporting password}"
 
-db_psql <<'SQL'
+db_psql_as switchboard_bootstrap "${SWITCHBOARD_DB_BOOTSTRAP_PASSWORD:?Missing bootstrap password}" postgres <<'SQL'
 \set VERBOSITY terse
 \set SHOW_CONTEXT never
+\getenv owner_password SWITCHBOARD_DB_OWNER_PASSWORD
 \getenv core_password SWITCHBOARD_CORE_PASSWORD
 \getenv config_loader_password SWITCHBOARD_CONFIG_LOADER_PASSWORD
 \getenv n8n_mock_password SWITCHBOARD_N8N_MOCK_PASSWORD
@@ -18,9 +20,23 @@ db_psql <<'SQL'
 
 SET log_min_error_statement = 'panic';
 BEGIN;
+CREATE ROLE switchboard_owner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD :'owner_password';
+CREATE ROLE app_core NOLOGIN;
+CREATE ROLE app_config_loader NOLOGIN;
+CREATE ROLE app_n8n_mock NOLOGIN;
+CREATE ROLE app_reporting NOLOGIN;
 CREATE ROLE switchboard_core LOGIN PASSWORD :'core_password' IN ROLE app_core;
 CREATE ROLE switchboard_config_loader LOGIN PASSWORD :'config_loader_password' IN ROLE app_config_loader;
 CREATE ROLE switchboard_n8n_mock LOGIN PASSWORD :'n8n_mock_password' IN ROLE app_n8n_mock;
 CREATE ROLE switchboard_reporting LOGIN PASSWORD :'reporting_password' IN ROLE app_reporting;
+COMMIT;
+
+CREATE DATABASE switchboard_test OWNER switchboard_owner;
+\connect switchboard_test
+SET log_min_error_statement = 'panic';
+BEGIN;
+CREATE EXTENSION pgcrypto;
+CREATE EXTENSION citext;
+CREATE EXTENSION vector;
 COMMIT;
 SQL

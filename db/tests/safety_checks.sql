@@ -1,88 +1,22 @@
 -- =====================================================================
 -- db/tests/safety_checks.sql — executable database safety tests
 --
--- Run against a freshly migrated + seeded database, as the DB owner/superuser:
+-- Run against a freshly migrated + seeded database, as the schema owner:
 --   psql -X -v ON_ERROR_STOP=1 -d <db> -f db/tests/safety_checks.sql
 -- Prints PASS/FAIL per check. Exits non-zero if any check fails (use in CI).
--- Everything runs inside one transaction and is ROLLED BACK: the database is left unchanged.
+-- Test rows roll back. Sequences can advance, so run only on a disposable cluster.
 --
 -- What these prove: database-level invariants (constraints, triggers, RLS, privileges).
 -- What they do NOT prove: application security, real integration safety, end-to-end reliability.
 -- =====================================================================
-\set ON_ERROR_STOP 1
-\pset footer off
-\pset tuples_only on
-SET client_min_messages = notice;
+\ir check_helpers.sql
 BEGIN;
+\ir check_fixtures.sql
 
-SELECT set_config('test.pass', '0', false), set_config('test.fail', '0', false) \g /dev/null
-
-CREATE FUNCTION pg_temp.record(ok boolean, label text, detail text DEFAULT NULL) RETURNS void
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF ok THEN
-    PERFORM set_config('test.pass', (current_setting('test.pass')::int + 1)::text, false);
-    RAISE NOTICE 'PASS  %', label;
-  ELSE
-    PERFORM set_config('test.fail', (current_setting('test.fail')::int + 1)::text, false);
-    RAISE NOTICE 'FAIL  %  -- %', label, detail;
-  END IF;
-END $$;
-
--- Statement must fail with an error containing `pattern`.
-CREATE FUNCTION pg_temp.expect_error(label text, stmt text, pattern text) RETURNS void
-LANGUAGE plpgsql AS $$
-BEGIN
-  BEGIN
-    EXECUTE stmt;
-  EXCEPTION WHEN OTHERS THEN
-    PERFORM pg_temp.record(SQLERRM ILIKE '%' || pattern || '%', label, 'wrong error: ' || SQLERRM);
-    RETURN;
-  END;
-  PERFORM pg_temp.record(false, label, 'no error raised');
-END $$;
-
--- Statement must succeed.
-CREATE FUNCTION pg_temp.expect_ok(label text, stmt text) RETURNS void
-LANGUAGE plpgsql AS $$
-BEGIN
-  EXECUTE stmt;
-  PERFORM pg_temp.record(true, label);
-EXCEPTION WHEN OTHERS THEN
-  PERFORM pg_temp.record(false, label, SQLERRM);
-END $$;
-
--- Query must return exactly `expected` (as text).
-CREATE FUNCTION pg_temp.expect_value(label text, query text, expected text) RETURNS void
-LANGUAGE plpgsql AS $$
-DECLARE got text;
-BEGIN
-  EXECUTE query INTO got;
-  PERFORM pg_temp.record(got IS NOT DISTINCT FROM expected, label, format('expected %s, got %s', expected, got));
-EXCEPTION WHEN OTHERS THEN
-  PERFORM pg_temp.record(false, label, SQLERRM);
-END $$;
-
--- ---------------------------------------------------------------------
--- Fixtures (as owner). Northwind = 10000000-…-0001 from the seed.
--- A second tenant "Acme" proves isolation.
--- ---------------------------------------------------------------------
-INSERT INTO tenants (id, slug, name) VALUES ('91000000-0000-0000-0000-000000000001', 'acme-test', 'Acme Test Co');
-INSERT INTO tenant_packs (id, tenant_id, pack_key, pack_id) VALUES
-  ('91000000-0000-0000-0000-000000000002', '91000000-0000-0000-0000-000000000001', 'ecommerce_support', '30000000-0000-0000-0000-000000000001');
-INSERT INTO staff_users (id, tenant_id, email, name, role) VALUES
-  ('91000000-0000-0000-0000-000000000003', '91000000-0000-0000-0000-000000000001', 'admin@acme.example', 'Acme Admin', 'admin');
-INSERT INTO cases (id, tenant_id, tenant_pack_id, pack_id, channel, external_thread_id) VALUES
-  ('91000000-0000-0000-0000-000000000004', '91000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000002',
-   '30000000-0000-0000-0000-000000000001', 'email', 'acme-th-1');
-
--- Northwind invoice case + message
-INSERT INTO cases (id, tenant_id, tenant_pack_id, pack_id, channel, external_thread_id) VALUES
-  ('92000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000003',
-   '30000000-0000-0000-0000-000000000003', 'email', 'nw-th-1');
-INSERT INTO messages (id, tenant_id, case_id, trace_id, idempotency_key, direction, channel, body_text) VALUES
-  ('92000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001',
-   gen_random_uuid(), 'email:test-1', 'inbound', 'email', 'Invoice attached');
+SELECT pg_temp.expect_value('schema owner owns cases and lacks superuser, role creation, and RLS bypass',
+  $q$SELECT (c.relowner = r.oid AND NOT r.rolsuper AND NOT r.rolcreaterole AND NOT r.rolbypassrls)::text
+       FROM pg_catalog.pg_class c CROSS JOIN pg_catalog.pg_roles r
+      WHERE c.oid = 'public.cases'::regclass AND r.rolname = session_user$q$, 'true');
 
 \echo
 \echo '== 1. Data integrity & tenant consistency =='
@@ -269,60 +203,6 @@ SELECT pg_temp.expect_error('approved draft text is frozen',
   'content is frozen');
 
 \echo
-\echo '== 6. Row-level security & least privilege (as app roles) =='
-SET ROLE app_core;
-SELECT set_config('app.tenant_id', '', false) \g /dev/null
-SELECT pg_temp.expect_value('no tenant context → sees zero cases (fail closed)',
-  $q$SELECT count(*)::text FROM cases$q$, '0');
-
-SELECT pg_temp.expect_value('ingest can resolve tenant from inbound address without context',
-  $q$SELECT tenant_id::text FROM resolve_channel_endpoint('email','invoices@northwind.example')$q$,
-  '10000000-0000-0000-0000-000000000001');
-
-SELECT set_config('app.tenant_id', '10000000-0000-0000-0000-000000000001', false) \g /dev/null
-SELECT pg_temp.expect_value('Northwind context cannot see Acme''s case',
-  $q$SELECT count(*)::text FROM cases WHERE id='91000000-0000-0000-0000-000000000004'$q$, '0');
-SELECT pg_temp.expect_value('Northwind context sees its own case',
-  $q$SELECT count(*)::text FROM cases WHERE id='92000000-0000-0000-0000-000000000001'$q$, '1');
-SELECT pg_temp.expect_value('Northwind context sees no Acme staff',
-  $q$SELECT count(*)::text FROM staff_users WHERE tenant_id='91000000-0000-0000-0000-000000000001'$q$, '0');
-
-SELECT pg_temp.expect_error('cannot write a row for another tenant',
-  $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
-     VALUES ('91000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004',gen_random_uuid(),'email:rls','inbound','email')$q$,
-  'row-level security');
-
-SELECT pg_temp.expect_error('app cannot change which tools a pack may use',
-  $q$UPDATE pack_tools SET approval_role = NULL WHERE tool_key = 'invoice_schedule_payment'$q$, 'permission denied');
-SELECT pg_temp.expect_error('app cannot change a tool''s risk level',
-  $q$UPDATE tools SET risk_level = 'read' WHERE key = 'refund_issue'$q$, 'permission denied');
-SELECT pg_temp.expect_error('app cannot change tenant pack config',
-  $q$UPDATE tenant_packs SET config = '{}'$q$, 'permission denied');
-SELECT pg_temp.expect_error('app cannot edit audit records',
-  $q$UPDATE audit_log SET actor_id = 'x'$q$, 'permission denied');
-SELECT pg_temp.expect_error('app cannot delete operational data',
-  $q$DELETE FROM cases WHERE id='92000000-0000-0000-0000-000000000001'$q$, 'permission denied');
-
-SELECT pg_temp.expect_ok('app can append to the audit log',
-  $q$INSERT INTO audit_log (tenant_id, actor_type, actor_id, event_type)
-     VALUES ('10000000-0000-0000-0000-000000000001','system','test','test.event')$q$);
-RESET ROLE;
-
-SET ROLE app_n8n_mock;
-SELECT pg_temp.expect_error('n8n mock role cannot read engine tables',
-  $q$SELECT count(*) FROM cases$q$, 'permission denied');
-SELECT pg_temp.expect_value('n8n mock role can read the mock shop',
-  $q$SELECT count(*)::text FROM demo.shop_orders WHERE order_number='NW-1001'$q$, '1');
-RESET ROLE;
-
-SET ROLE app_reporting;
-SELECT pg_temp.expect_error('reporting role cannot read raw messages',
-  $q$SELECT count(*) FROM messages$q$, 'permission denied');
-SELECT pg_temp.expect_ok('reporting role can read KPI views',
-  $q$SELECT count(*) FROM v_daily_kpis$q$);
-RESET ROLE;
-
-\echo
 \echo '== 7. Audit log =='
 SELECT pg_temp.expect_error('audit UPDATE blocked (even for owner)',   $q$UPDATE audit_log SET actor_id='x'$q$, 'append-only');
 SELECT pg_temp.expect_error('audit DELETE blocked (even for owner)',   $q$DELETE FROM audit_log$q$,           'append-only');
@@ -330,20 +210,12 @@ SELECT pg_temp.expect_error('audit TRUNCATE blocked (even for owner)', $q$TRUNCA
 SELECT pg_temp.expect_value('hash chain is intact',
   $q$SELECT left(verify_audit_chain(), 2)$q$, 'OK');
 
--- Simulate a superuser who disables the trigger and edits history: must be DETECTED.
+-- Simulate a schema owner who disables the trigger and edits history: must be DETECTED.
 ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_update;
 UPDATE audit_log SET details = '{"tampered":true}' WHERE chain_seq = 1;
 ALTER TABLE audit_log ENABLE TRIGGER audit_log_no_update;
-SELECT pg_temp.expect_value('superuser tampering is detected by the hash chain',
+SELECT pg_temp.expect_value('schema owner tampering is detected by the hash chain',
   $q$SELECT verify_audit_chain()$q$, 'BROKEN: row 1 was modified');
 
--- ---------------------------------------------------------------------
-\echo
-SELECT current_setting('test.pass') AS passed, current_setting('test.fail') AS failed \gset
-\echo 'Passed: ' :passed '   Failed: ' :failed
-DO $$ BEGIN
-  IF current_setting('test.fail')::int > 0 THEN
-    RAISE EXCEPTION '% safety check(s) failed', current_setting('test.fail');
-  END IF;
-END $$;
+\ir check_results.sql
 ROLLBACK;

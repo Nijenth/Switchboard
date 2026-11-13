@@ -10,9 +10,7 @@
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS citext;     -- case-insensitive emails
-CREATE EXTENSION IF NOT EXISTS vector;     -- pgvector
+-- The bootstrap step installs pgcrypto, citext and vector before running this migration.
 
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger
 LANGUAGE plpgsql AS $$

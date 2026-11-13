@@ -367,10 +367,11 @@ All endpoints require a service token, take and return `trace_id`, and validate 
 3. **Application:** every query still filters by `tenant_id`. Cross-tenant jobs (SLA watchdog, reconciler)
    loop over tenants and set context per tenant. They never use an RLS-bypassing role.
 
-### Database roles (created in 002; login users created by `scripts/create_db_users` from env vars)
+### Database roles (provisioned by `scripts/create_db_users` before migrations)
 | Role | Used by | Can | Cannot |
 |---|---|---|---|
-| owner (migrations only) | `scripts/migrate` | DDL | Is never used by a running service |
+| bootstrap superuser | `scripts/create_db_users` | Provision the database, extensions, and roles | Is never used by a running service |
+| non-superuser schema owner | `scripts/migrate`, seed runner, owner checks | DDL on owned objects | Cannot create roles or bypass RLS on tables owned by other roles |
 | `app_core` | core service | Read config; read/insert/update operational tables; insert audit | Change packs/tools/tenant config; UPDATE/DELETE audit; DELETE anything |
 | `app_config_loader` | `scripts/load_packs`, admin tools | Write packs, tools, tenant config, knowledge, eval cases | Touch cases/messages/actions/approvals |
 | `app_n8n_mock` | n8n mock tool branches | Read/write `demo` schema | Read any engine table |

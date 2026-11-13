@@ -3,6 +3,7 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/db_common.sh
 
+: "${SWITCHBOARD_DB_BOOTSTRAP_PASSWORD:?Missing bootstrap password}"
 : "${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}"
 : "${SWITCHBOARD_CORE_PASSWORD:?Missing core password}"
 : "${SWITCHBOARD_CONFIG_LOADER_PASSWORD:?Missing config loader password}"
@@ -22,8 +23,8 @@ data_dir="$check_dir/pgdata"
 mkdir -- "$SWITCHBOARD_DB_SOCKET"
 
 printf 'Initializing disposable PostgreSQL cluster\n'
-initdb --pgdata="$data_dir" --username=switchboard_owner --auth=scram-sha-256 \
-    --pwfile=<(printf '%s\n' "$SWITCHBOARD_DB_OWNER_PASSWORD") --encoding=UTF8 --no-locale >/dev/null
+initdb --pgdata="$data_dir" --username=switchboard_bootstrap --auth=scram-sha-256 \
+    --pwfile=<(printf '%s\n' "$SWITCHBOARD_DB_BOOTSTRAP_PASSWORD") --encoding=UTF8 --no-locale >/dev/null
 
 stop_db() {
     if [[ -f "$data_dir/postmaster.pid" ]]; then
@@ -35,12 +36,17 @@ pg_ctl --pgdata="$data_dir" --log="$check_dir/postgres.log" --wait \
     --options="-c listen_addresses='' -c unix_socket_directories=$SWITCHBOARD_DB_SOCKET -c unix_socket_permissions=0700 -p 5432" \
     start
 
-PGPASSWORD="$SWITCHBOARD_DB_OWNER_PASSWORD" createdb --no-password \
-    --host="$SWITCHBOARD_DB_SOCKET" --port=5432 --username=switchboard_owner \
-    --maintenance-db=postgres switchboard_test
-
+bash scripts/create_db_users
 bash scripts/migrate
 bash scripts/seed
-bash scripts/create_db_users
 printf 'Running database safety checks\n'
 db_psql --file=db/tests/safety_checks.sql
+
+# Test fixtures must be visible to the independently authenticated sessions.
+db_psql --single-transaction --file=db/tests/check_fixtures.sql
+printf 'Running core login checks\n'
+db_psql_as switchboard_core "$SWITCHBOARD_CORE_PASSWORD" switchboard_test --file=db/tests/core_checks.sql
+printf 'Running mock login checks\n'
+db_psql_as switchboard_n8n_mock "$SWITCHBOARD_N8N_MOCK_PASSWORD" switchboard_test --file=db/tests/n8n_mock_checks.sql
+printf 'Running reporting login checks\n'
+db_psql_as switchboard_reporting "$SWITCHBOARD_REPORTING_PASSWORD" switchboard_test --file=db/tests/reporting_checks.sql
