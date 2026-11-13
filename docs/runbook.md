@@ -9,9 +9,22 @@ starts a fresh disposable cluster, exercises the gateway over loopback, and comp
 provider aliases on two repeats of the published ecommerce fixtures. It removes the test
 services on exit. The reported costs and latencies are fixture data and local timings.
 The fake server replays fixture labels. Its accuracy and agreement do not measure a model.
-The gate evaluates the understanding result, which remains approval-only or escalation until
-the decision pipeline is implemented. Rerun the safety gate against that pipeline before
-enabling automatic decisions.
+The gate evaluates the same policy engine as `/decide`. Until drafting and retrieval are wired
+in, outbound proposals enter review because verified citations and output checks are unavailable.
+The report counts intent accuracy only for classified attempts and lists guardrail escalations
+separately.
+
+### Offline ecommerce decisions
+
+Set `SWITCHBOARD_DECIDE_CREDENTIALS` to a JSON list of tenant IDs and separate 64-character
+hex bearer tokens. Call `POST /decide` with the case ID and latest inbound message ID after
+`/understand`. An optional `proposed_tools` list names tools to evaluate. Core gets identity,
+guardrail flags, confidence, tool permissions, and budget state from the database. It records
+the evaluated inputs and policy revision. Replaying the current decision with the same inputs
+returns the existing revision.
+
+The endpoint writes decisions and audit entries. Drafting, tool dispatch, and the workflow
+failure-mode gate follow the decision-pipeline review.
 
 `/understand` defaults to the primary named by `SWITCHBOARD_UNDERSTAND_PRIMARY`. Retry a
 completed message using the original request body to replay the result. To explicitly run it
@@ -41,6 +54,13 @@ and locale-specific address parsing. Combine it with the existing pattern and kn
 checks, and evaluate recall on independently labeled multilingual messages. Hold content for
 review when the detector is unavailable or uncertain. The current fixtures track name and
 address misses by case ID and category without printing the spans.
+
+Prototype Microsoft Presidio with locally installed language-specific NER models and custom
+address candidate recognizers. Use libpostal to parse the candidate spans, including
+house-number-last forms. Both can run locally without API fees. Compare span recall and
+false positives against independent multilingual fixtures before enabling real data.
+[Presidio Analyzer](https://microsoft.github.io/presidio/analyzer/).
+[libpostal](https://github.com/openvenues/libpostal).
 
 ## Run the database safety suite
 

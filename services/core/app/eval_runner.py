@@ -15,6 +15,7 @@ from app.adapters.ai import OfflineGateway, Provider
 from app.adapters.db import Settings, create_pool
 from app.ai_accounting import Accounting
 from app.guardrails import redact_text
+from app.policy import decide
 from app.understanding import Understanding, understand
 
 PROVIDERS: tuple[Provider, Provider] = ("openai", "anthropic")
@@ -70,6 +71,22 @@ def run(
                 """,
                 (pack_key, version),
             ).fetchall()
+            tools = {
+                key: {
+                    "risk_level": risk,
+                    "requires_verified_identity": identity,
+                    "approval_role": role,
+                    "check_fields": list(schema.get("properties", {})),
+                }
+                for key, risk, identity, role, schema in conn.execute(
+                    """
+                    SELECT t.key,t.risk_level,t.requires_verified_identity,pt.approval_role,t.output_schema
+                    FROM public.packs p JOIN public.pack_tools pt ON pt.pack_id=p.id
+                    JOIN public.tools t ON t.key=pt.tool_key WHERE p.key=%s AND p.version=%s
+                    """,
+                    (pack_key, version),
+                )
+            }
         if (
             row is None
             or not cases
@@ -111,11 +128,33 @@ def run(
             for case_id, key, message, sender, expected, expected_decision, fields, tags in cases:
                 redacted = redact_text(message or "", sender_address=sender or "")
                 outcomes = []
+                decisions = []
                 attempts = []
                 for _ in range(2):
                     accounting = Accounting(pool, gateway, tenant, uuid4(), redacted, provider)
                     result = understand(pack, redacted, provider, accounting.attempt)
                     outcomes.append(result)
+                    context = {
+                        "case": {
+                            "identity_verified": "verified" in tags and "unverified" not in tags
+                        },
+                        "classification": {
+                            "intent_key": result.intent,
+                            "confidence": result.confidence,
+                            "flags": [result.reason] if result.decision == "escalate" else [],
+                        },
+                        "extraction": result.extraction,
+                        "field_confidence": result.field_confidence,
+                        "extraction_valid": result.reason == "policy_review",
+                    }
+                    proposed = (
+                        {key for key, tool in tools.items() if tool["risk_level"] == "money"}
+                        if "money" in tags
+                        else set()
+                    )
+                    decisions.append(
+                        decide(pack, context, tools, proposed, budget_blocked=accounting.blocked)
+                    )
                     attempts.append(accounting)
                     latencies.append(accounting.latency_ms)
                     costs.append(float(accounting.cost))
@@ -127,10 +166,13 @@ def run(
                 if any(item.decision == "escalate" for item in outcomes):
                     escalations += 1
                     expected_escalations += int(expected_decision == "escalate")
-                signature = [(item.intent, item.extraction, item.decision) for item in outcomes]
+                signature = [
+                    (item.intent, item.extraction, policy.decision)
+                    for item, policy in zip(outcomes, decisions, strict=True)
+                ]
                 provider_signatures.append(tuple(signature))
                 agreement.append(signature[0] == signature[1])
-                violation = any(gate_violation(item.decision, tags) for item in outcomes)
+                violation = any(gate_violation(item.decision, tags) for item in decisions)
                 gates += int(violation)
                 with pool.connection() as conn:
                     conn.execute(
@@ -145,17 +187,22 @@ def run(
                             run_id,
                             case_id,
                             first.intent,
-                            first.decision,
+                            decisions[0].decision,
                             Jsonb(first.extraction),
                             first.confidence,
                             intent_correct(first, expected),
-                            first.decision == expected_decision,
+                            decisions[0].decision == expected_decision,
                             None if fields is None else int(first.extraction == fields),
                             "auto_on_safety_case" if violation else None,
                             sum(item.cost for item in attempts),
                             sum(item.latency_ms for item in attempts),
                             Jsonb(
-                                {"case_key": key, "second": asdict(second), "agreed": agreement[-1]}
+                                {
+                                    "case_key": key,
+                                    "second": asdict(second),
+                                    "agreed": agreement[-1],
+                                    "policy_rules": [item.rule_id for item in decisions],
+                                }
                             ),
                         ),
                     )

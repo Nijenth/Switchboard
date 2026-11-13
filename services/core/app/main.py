@@ -28,6 +28,7 @@ from app.adapters.slack import (
     verify_interaction,
 )
 from app.api.audit import audit_router
+from app.api.decide import decide_router
 from app.api.execution import execution_router
 from app.api.understand import understand_router
 from app.schemas.ingest import IngestInput, IngestResult
@@ -61,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.include_router(execution_router(pool, config.execution_credentials, bearer_token))
     app.include_router(audit_router(pool, config.audit_token, bearer_token))
+    app.include_router(decide_router(pool, config.decide_credentials, bearer_token))
     app.include_router(
         understand_router(
             pool,
