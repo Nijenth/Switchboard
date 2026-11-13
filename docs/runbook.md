@@ -33,3 +33,11 @@ Deferred engineering work includes structured JSON logs with `trace_id`, a Bash 
 Create a repository-root `.venv` with Python 3.12 and install `services/core/requirements-dev.txt` into it. With Docker Desktop running and the pgvector image from the SQL suite available locally, run `./scripts/test_core.ps1` from PowerShell.
 
 The script provisions a fresh PostgreSQL cluster with generated credentials. It publishes a temporary port on `127.0.0.1` and checks the cluster's randomly generated marker before tests write fixtures or send requests. The test app runs in process. The script removes its container and anonymous volumes on exit. A startup error stops the run before pytest, and a pytest failure makes the script exit nonzero.
+
+## Stage 2 approval and execution checks
+
+Core must verify a reviewer interaction and resolve the reviewer before calling the database decision function. The database checks the reviewer's active role, tenant, request deadline, and exact subject hash. The SLA watchdog calls the expiry function in a tenant-scoped transaction. An edit or escalation retires the original action or draft and creates a fresh request. Action edits are limited to amount and currency. Draft edits are limited to subject and body. Escalation requires an admin on the successor request.
+
+Automatic claims require the current case decision to allow the tool. Registered reads are exempt from this prior decision requirement and still require an enabled pack and verified identity when the registry requires it. External communications require a same-case authorized draft. Failed actions cannot be reclaimed. Leave ambiguous attempts for reconciliation and keep automated retries disabled until the reconciliation path records the evidence needed to authorize a retry.
+
+If migration `004_execution_authorization.sql` reports existing execution records, stop. It requires an explicit migration plan to preserve old approvals and payload bindings. The current test runner uses a fresh cluster with no execution records.
