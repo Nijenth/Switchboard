@@ -2,6 +2,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/db_common.sh
+export SWITCHBOARD_MIGRATION_DATABASE=switchboard_test
 
 listen_addresses=''
 cluster_options=''
@@ -77,6 +78,7 @@ fi
 
 printf 'Running database safety checks\n'
 db_psql --file=db/tests/safety_checks.sql
+bash scripts/check_migrations
 
 # Test fixtures must be visible to the independently authenticated sessions.
 db_psql --single-transaction --file=db/tests/check_fixtures.sql

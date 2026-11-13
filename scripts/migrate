@@ -3,4 +3,113 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/db_common.sh
 
-apply_db_sql db/migrations
+export LC_ALL=C
+directory=${SWITCHBOARD_MIGRATIONS_DIR:-db/migrations}
+files=("$directory"/*.sql)
+declare -a names=() versions=() hashes=() bodies=()
+expected=1
+
+database=${SWITCHBOARD_MIGRATION_DATABASE:-switchboard_test}
+if [[ ${SWITCHBOARD_DB_SOCKET:-} != /* || ! -S $SWITCHBOARD_DB_SOCKET/.s.PGSQL.5432 ||
+      ! $database =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; then
+    printf 'Provide an explicit PostgreSQL socket directory and plain database name\n' >&2
+    exit 1
+fi
+unset PGHOSTADDR PGOPTIONS PGSERVICE PGSERVICEFILE
+
+# Snapshot each SQL file so that the bytes hashed and the SQL executed come from the same read.
+for file in "${files[@]}"; do
+    name=${file##*/}
+    if [[ ! -f $file || ! $name =~ ^([0-9]{3})_[a-z0-9_]+\.sql$ ]] ||
+       (( 10#${BASH_REMATCH[1]:-0} != expected )); then
+        printf 'Expected migration version %03d, got %s\n' "$expected" "$name" >&2
+        exit 1
+    fi
+    version=${BASH_REMATCH[1]}
+    if IFS= read -r -d '' sql < "$file"; then
+        printf 'Migration contains NUL: %s\n' "$name" >&2
+        exit 1
+    fi
+    if [[ $sql == *'$switchboard_migration$'* || $sql == *'$switchboard_runner$'* ]]; then
+        printf 'Migration uses the reserved SQL delimiter: %s\n' "$name" >&2
+        exit 1
+    fi
+    # Treat the outer transaction markers as a file format. Preserve nested PL/pgSQL blocks.
+    if ! body=$(printf '%s' "$sql" | awk '
+        /^[[:space:]]*\\/ { bad = 1 }
+        /^BEGIN;$/ { if (commits) bad = 1; begins++; next }
+        /^COMMIT;$/ { if (begins != 1) bad = 1; commits++; next }
+        toupper($0) ~ /^[[:space:]]*(BEGIN|COMMIT|ROLLBACK|ABORT|START TRANSACTION)[[:space:]]*;/ { bad = 1 }
+        commits && /[^[:space:]]/ { bad = 1 }
+        !begins && /[^[:space:]]/ && !/^--/ { bad = 1 }
+        { print }
+        END { if (bad || begins != 1 || commits != 1) exit 1 }
+    '); then
+        printf 'Migration must contain SQL inside one outer BEGIN and COMMIT: %s\n' "$name" >&2
+        exit 1
+    fi
+    checksum=$(printf '%s' "$sql" | sha256sum)
+    names+=("$name")
+    versions+=("$version")
+    hashes+=("${checksum%% *}")
+    bodies+=("$body")
+    expected=$((expected + 1))
+done
+
+{
+    cat <<'SQL'
+SELECT pg_catalog.pg_advisory_lock(6397562149380320130);
+DO $$
+BEGIN
+  IF session_user <> 'switchboard_owner' OR current_user <> session_user OR
+     NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = current_database()
+                   AND datdba = (SELECT oid FROM pg_roles WHERE rolname = session_user)) THEN
+    RAISE EXCEPTION 'Migration requires the restricted database owner';
+  END IF;
+  IF to_regclass('switchboard_migrations.applied') IS NULL AND
+     (to_regnamespace('demo') IS NOT NULL OR to_regclass('public.tenants') IS NOT NULL) THEN
+    RAISE EXCEPTION 'Existing Switchboard schema has no migration ledger; review its baseline first';
+  END IF;
+END $$;
+CREATE SCHEMA IF NOT EXISTS switchboard_migrations;
+REVOKE ALL ON SCHEMA switchboard_migrations FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS switchboard_migrations.applied (
+    version integer PRIMARY KEY CHECK (version > 0),
+    filename text NOT NULL UNIQUE,
+    checksum text NOT NULL CHECK (checksum ~ '^[0-9a-f]{64}$'),
+    applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TEMP TABLE expected_migrations (version integer PRIMARY KEY, filename text, checksum text);
+SQL
+    for i in "${!names[@]}"; do
+        printf "INSERT INTO pg_temp.expected_migrations VALUES (%s,'%s','%s');\n" \
+            "${versions[i]}" "${names[i]}" "${hashes[i]}"
+    done
+    cat <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM switchboard_migrations.applied a
+    LEFT JOIN pg_temp.expected_migrations e USING (version)
+    WHERE (a.filename, a.checksum) IS DISTINCT FROM (e.filename, e.checksum)
+  ) OR EXISTS (
+    SELECT 1 FROM pg_temp.expected_migrations e
+    WHERE e.version <= (SELECT max(version) FROM switchboard_migrations.applied)
+      AND NOT EXISTS (SELECT 1 FROM switchboard_migrations.applied a WHERE a.version = e.version)
+  ) THEN
+    RAISE EXCEPTION 'Applied migration history differs from repository';
+  END IF;
+END $$;
+SQL
+    for i in "${!names[@]}"; do
+        printf 'SELECT EXISTS (SELECT 1 FROM switchboard_migrations.applied WHERE version = %s) AS already_applied \\gset\n' "${versions[i]}"
+        printf '\\if :already_applied\n\\echo Skipping %s\n\\else\n\\echo Applying %s\nBEGIN;\n' \
+            "${names[i]}" "${names[i]}"
+        printf 'DO $switchboard_runner$\nBEGIN\n  EXECUTE $switchboard_migration$\n%s\n$switchboard_migration$;\nEND\n$switchboard_runner$;\n' \
+            "${bodies[i]}"
+        printf "INSERT INTO switchboard_migrations.applied (version,filename,checksum) VALUES (%s,'%s','%s');\nCOMMIT;\n" \
+            "${versions[i]}" "${names[i]}" "${hashes[i]}"
+        printf '%s\n' '\endif'
+    done
+} | db_psql_as switchboard_owner "${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}" \
+    "$database" --file=-

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+source scripts/db_common.sh
+export SWITCHBOARD_MIGRATION_DATABASE=switchboard_test
+
+work=$(mktemp -d "${SWITCHBOARD_DB_SOCKET}/migration-check.XXXXXXXX")
+export SWITCHBOARD_MIGRATIONS_DIR="$work"
+cp -- db/migrations/*.sql "$work/"
+
+check_rejected() {
+    local message=$1
+    local result
+    if result=$(bash scripts/migrate 2>&1); then
+        printf 'Migration unexpectedly succeeded: %s\n' "$message" >&2
+        exit 1
+    fi
+    if [[ $result != *"$message"* ]]; then
+        printf '%s\n' "$result" >&2
+        exit 1
+    fi
+    printf 'PASS migration refused: %s\n' "$message"
+}
+
+bash scripts/migrate
+files=("$work"/*.sql)
+latest=${files[${#files[@]}-1]}
+number=${latest##*/}
+next=$(printf '%03d' "$((10#${number%%_*} + 1))")
+{ printf '%s\n' '-- changed checksum'; cat -- "db/migrations/$number"; } > "$latest"
+check_rejected 'Applied migration history differs from repository'
+cp -- "db/migrations/$number" "$latest"
+mv -- "$latest" "$work/${number%%_*}_renamed.sql"
+check_rejected 'Applied migration history differs from repository'
+mv -- "$work/${number%%_*}_renamed.sql" "$latest"
+mv -- "$latest" "$work/missing"
+check_rejected 'Applied migration history differs from repository'
+mv -- "$work/missing" "$latest"
+
+cat > "$work/${next}_failing_check.sql" <<'SQL'
+BEGIN;
+CREATE TABLE public.migration_rollback_check (id integer);
+SELECT 1 / 0;
+COMMIT;
+SQL
+check_rejected 'division by zero'
+if [[ $(db_psql -Atc "SELECT to_regclass('public.migration_rollback_check') IS NULL
+  AND NOT EXISTS (SELECT 1 FROM switchboard_migrations.applied WHERE version = $next)") != t ]]; then
+    printf 'Migration body or ledger row survived a failed transaction\n' >&2
+    exit 1
+fi
+printf 'PASS failed migration rolled back its schema changes and ledger row\n'
+
+cat > "$work/${next}_failing_check.sql" <<'SQL'
+BEGIN;
+CREATE TABLE public.migration_rollback_check (id integer); COMMIT;
+COMMIT;
+SQL
+check_rejected 'EXECUTE of transaction commands is not implemented'

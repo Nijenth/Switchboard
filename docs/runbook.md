@@ -24,7 +24,11 @@ Send the token in `Authorization: Bearer …` with the canonical JSON body. The 
 
 An idempotency key is scoped to the authenticated endpoint. A retry must preserve the normalized delivery, including its received time. Trace IDs and the optional matching tenant claim may differ. Reusing the key for a different delivery returns HTTP 409. Existing rows without a digest return 409 on key reuse because their original delivery cannot be verified.
 
-Migration tracking with checksums is required before applying the migrations to a persistent database.
+### Apply migrations to an initialized database
+
+Run `bash scripts/migrate` as the schema owner with `SWITCHBOARD_DB_SOCKET`, `SWITCHBOARD_DB_OWNER_PASSWORD`, and `SWITCHBOARD_MIGRATION_DATABASE` pointing at the intended database. Provision roles and extensions first. Keep the demo seed command separate. The runner checks the entire applied history under a database lock, then writes each migration and its checksum in the same transaction. Use one outer `BEGIN;` and `COMMIT;` per migration, with transactional SQL and no psql commands inside.
+
+If the ledger differs from the repository, recover the exact applied file and put the change in a new migration. A database with an existing Switchboard schema and no ledger needs an independently verified baseline before further migrations.
 
 Deferred engineering work includes structured JSON logs with `trace_id`, a Bash integration runner for CI, and a dependency lockfile.
 
