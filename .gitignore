@@ -1,0 +1,8 @@
+# secrets: never commit (AGENTS.md §10)
+.env
+
+# original download: kept on disk, not in history
+ai-ops-platform.zip
+
+# editor workspace files
+*.code-workspace
