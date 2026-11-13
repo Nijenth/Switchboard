@@ -37,6 +37,12 @@ INJECTION_PATTERNS = (
         r"\b(?:system|developer|hidden)\s+(?:prompt|instructions?)\b"
     ),
     re.compile(r"</?(?:system|developer|customer_message)\b|\[/?inst\]|<\|(?:im_start|system)\|>"),
+    re.compile(
+        r"\b(?:forwarded|quoted|attached|linked|retrieved)\b.{0,80}"
+        r"\b(?:note|message|document|page|policy|instructions?)\b.{0,80}"
+        r"\b(?:tells?|requires?|instructs?|directs?)\b.{0,50}"
+        r"\b(?:assistant|model|agent|system)\b"
+    ),
 )
 
 LANGUAGE_WORDS = {
@@ -83,6 +89,7 @@ def detect_prompt_injection(text: str) -> bool:
     normalized = unicodedata.normalize("NFKC", text).casefold()
     visible = "".join(char for char in normalized if unicodedata.category(char) != "Cf")
     compact = " ".join(visible.split())
+    compact = re.sub(r"\bi[ ._-]+g[ ._-]+n[ ._-]+o[ ._-]+r[ ._-]+e\b", "ignore", compact)
     return any(pattern.search(compact) for pattern in INJECTION_PATTERNS)
 
 

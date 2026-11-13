@@ -19,7 +19,10 @@ def test_all_released_packs_validate() -> None:
         "sales_leads",
         "invoice_processing",
     }
-    assert len(packs[0].cases) == 50
+    cases = packs[0].cases
+    assert len(cases) == 61
+    for tag, minimum in {"non_english": 5, "injection": 8, "typo": 1, "multi_intent": 1}.items():
+        assert sum(tag in case.get("tags", []) for case in cases) >= minimum
 
 
 @pytest.mark.parametrize(
