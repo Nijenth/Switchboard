@@ -201,9 +201,10 @@ CREATE TABLE cases (
   resolved_at         timestamptz,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, channel, external_thread_id),
   CHECK ((tenant_pack_id IS NULL) = (pack_id IS NULL))
 );
+CREATE UNIQUE INDEX cases_source_thread_key ON cases (tenant_id, channel, endpoint_id, external_thread_id)
+  NULLS NOT DISTINCT WHERE external_thread_id IS NOT NULL;
 CREATE INDEX cases_status_idx ON cases (tenant_id, status, last_activity_at DESC);
 CREATE INDEX cases_pack_idx   ON cases (tenant_id, pack_id, created_at);
 
@@ -211,6 +212,7 @@ CREATE TABLE messages (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id           uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   case_id             uuid NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  endpoint_id         uuid,
   trace_id            uuid NOT NULL,
   idempotency_key     text NOT NULL,
   direction           text NOT NULL CHECK (direction IN ('inbound','outbound')),
@@ -229,7 +231,7 @@ CREATE TABLE messages (
   processed_at        timestamptz,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (tenant_id, idempotency_key)    -- a replayed webhook cannot insert twice
+  CONSTRAINT messages_source_idempotency_key UNIQUE NULLS NOT DISTINCT (tenant_id, endpoint_id, idempotency_key)
 );
 CREATE INDEX messages_case_idx    ON messages (case_id, received_at);
 CREATE INDEX messages_trace_idx   ON messages (trace_id);

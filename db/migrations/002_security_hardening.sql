@@ -29,9 +29,11 @@ ALTER TABLE staff_users         ADD CONSTRAINT staff_users_tenant_id_key        
 ALTER TABLE queues              ADD CONSTRAINT queues_tenant_id_key              UNIQUE (tenant_id, id);
 ALTER TABLE tenant_packs        ADD CONSTRAINT tenant_packs_tenant_id_key        UNIQUE (tenant_id, id);
 ALTER TABLE channel_endpoints   ADD CONSTRAINT channel_endpoints_tenant_id_key   UNIQUE (tenant_id, id);
+ALTER TABLE channel_endpoints   ADD CONSTRAINT channel_endpoints_source_key      UNIQUE (tenant_id, channel, id);
 ALTER TABLE organizations       ADD CONSTRAINT organizations_tenant_id_key       UNIQUE (tenant_id, id);
 ALTER TABLE contacts            ADD CONSTRAINT contacts_tenant_id_key            UNIQUE (tenant_id, id);
 ALTER TABLE cases               ADD CONSTRAINT cases_tenant_id_key               UNIQUE (tenant_id, id);
+ALTER TABLE cases               ADD CONSTRAINT cases_source_key                  UNIQUE (tenant_id, id, channel, endpoint_id);
 ALTER TABLE cases               ADD CONSTRAINT cases_tenant_id_pack_key          UNIQUE (tenant_id, id, pack_id);
 ALTER TABLE messages            ADD CONSTRAINT messages_tenant_id_key            UNIQUE (tenant_id, id);
 ALTER TABLE messages            ADD CONSTRAINT messages_tenant_case_id_key       UNIQUE (tenant_id, case_id, id);
@@ -50,8 +52,9 @@ ALTER TABLE cases              ADD CONSTRAINT cases_contact_tenant_fk          F
 ALTER TABLE cases              ADD CONSTRAINT cases_org_tenant_fk              FOREIGN KEY (tenant_id, organization_id) REFERENCES organizations (tenant_id, id);
 ALTER TABLE cases              ADD CONSTRAINT cases_queue_tenant_fk            FOREIGN KEY (tenant_id, queue_id)        REFERENCES queues (tenant_id, id);
 ALTER TABLE cases              ADD CONSTRAINT cases_assignee_tenant_fk         FOREIGN KEY (tenant_id, assigned_to)     REFERENCES staff_users (tenant_id, id);
-ALTER TABLE cases              ADD CONSTRAINT cases_endpoint_tenant_fk         FOREIGN KEY (tenant_id, endpoint_id)     REFERENCES channel_endpoints (tenant_id, id);
+ALTER TABLE cases              ADD CONSTRAINT cases_endpoint_source_fk         FOREIGN KEY (tenant_id, channel, endpoint_id) REFERENCES channel_endpoints (tenant_id, channel, id);
 ALTER TABLE messages           ADD CONSTRAINT messages_case_tenant_fk          FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
+ALTER TABLE messages           ADD CONSTRAINT messages_case_source_fk          FOREIGN KEY (tenant_id, case_id, channel, endpoint_id) REFERENCES cases (tenant_id, id, channel, endpoint_id);
 ALTER TABLE documents          ADD CONSTRAINT documents_case_tenant_fk         FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
 ALTER TABLE documents          ADD CONSTRAINT documents_message_case_fk        FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);
 ALTER TABLE ai_runs            ADD CONSTRAINT ai_runs_case_tenant_fk           FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);

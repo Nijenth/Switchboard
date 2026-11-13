@@ -23,7 +23,7 @@ SELECT pg_temp.expect_value('schema owner owns cases and lacks superuser, role c
 SELECT pg_temp.expect_error('duplicate webhook is rejected (idempotency)',
   $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
      VALUES ('10000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001',gen_random_uuid(),'email:test-1','inbound','email')$q$,
-  'messages_tenant_id_idempotency_key_key');
+  'messages_source_idempotency_key');
 
 SELECT pg_temp.expect_error('message cannot point at another tenant''s case',
   $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
@@ -46,6 +46,7 @@ SELECT pg_temp.expect_error('tenant pack must reference a matching pack key',
   'tenant_packs_pack_id_pack_key_fkey');
 
 \ir case_scope_checks.sql
+\ir endpoint_scope_checks.sql
 
 \echo
 \echo '== 2. Tool permissions =='
