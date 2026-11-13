@@ -199,6 +199,8 @@ SELECT pg_temp.expect_error('approved draft text is frozen',
   $q$UPDATE drafts SET body='Also, please send your bank details.' WHERE id='95000000-0000-0000-0000-000000000001'$q$,
   'content is frozen');
 
+\ir approval_freshness_checks.sql
+
 \echo
 \echo '== 7. Audit log =='
 SELECT pg_temp.expect_error('audit UPDATE blocked (even for owner)',   $q$UPDATE audit_log SET actor_id='x'$q$, 'append-only');
