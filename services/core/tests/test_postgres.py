@@ -729,6 +729,58 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
                 loader.commit()
 
 
+def test_policy_revision_requires_reclaim_within_original_lease(settings: Settings) -> None:
+    action_id = uuid4()
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn:
+        with conn.transaction():
+            set_northwind(conn)
+            conn.execute(
+                """INSERT INTO public.actions (id, tenant_id, case_id, trace_id, idempotency_key,
+                    tool_key, risk_level, status)
+                    VALUES (%s,%s,%s,%s,%s,'po_lookup','read','proposed')""",
+                (action_id, NORTHWIND, CASE_ID, uuid4(), str(action_id)),
+            )
+            first, replacement = (sha256(token_hex(32).encode()).digest() for _ in range(2))
+            original = conn.execute(
+                "SELECT public.claim_mock_action(%s,'fixture-worker',%s)", (action_id, first)
+            ).fetchone()
+            assert original is not None and original[0] is not None
+
+        with conn.transaction():
+            set_northwind(conn)
+            conn.execute(
+                """INSERT INTO public.policy_decisions (tenant_id, case_id, pack_id, trace_id,
+                    decision, rule_id, rule_source, reason, policy_version)
+                    SELECT tenant_id,id,pack_id,%s,'auto','fixture','pack','Fixture revision','1'
+                    FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                (uuid4(), NORTHWIND, CASE_ID),
+            )
+        with conn.transaction():
+            set_northwind(conn)
+            assert conn.execute(
+                "SELECT public.consume_mock_grant(%s,'fixture-worker',%s)", (action_id, first)
+            ).fetchone() == (None,)
+            assert conn.execute(
+                "SELECT public.replace_unused_mock_grant(%s,'other-worker',%s)",
+                (action_id, replacement),
+            ).fetchone() == (None,)
+            assert (
+                conn.execute(
+                    "SELECT public.replace_unused_mock_grant(%s,'fixture-worker',%s)",
+                    (action_id, replacement),
+                ).fetchone()
+                == original
+            )
+            assert conn.execute(
+                "SELECT public.consume_mock_grant(%s,'fixture-worker',%s)", (action_id, first)
+            ).fetchone() == (None,)
+            consumed = conn.execute(
+                "SELECT public.consume_mock_grant(%s,'fixture-worker',%s)",
+                (action_id, replacement),
+            ).fetchone()
+            assert consumed is not None and consumed[0]["tool_key"] == "po_lookup"
+
+
 def test_audit_checkpoint_api_checks_previous_hash(settings: Settings) -> None:
     token = token_hex(32)
     with TestClient(create_app(replace(settings, audit_token=token))) as client:
