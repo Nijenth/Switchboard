@@ -1,0 +1,19 @@
+# Template only. The offline Compose profile exclusively mounts offline.yaml.
+model_list:
+  - model_name: switchboard-openai
+    litellm_params:
+      model: os.environ/SWITCHBOARD_OPENAI_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+      temperature: 0.2
+      reasoning_effort: none
+  - model_name: switchboard-anthropic
+    litellm_params:
+      model: os.environ/SWITCHBOARD_ANTHROPIC_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+      reasoning_effort: low
+router_settings:
+  num_retries: 0
+litellm_settings:
+  num_retries: 0
+  telemetry: false
+  set_verbose: false

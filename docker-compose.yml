@@ -1,4 +1,38 @@
 services:
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.108.5@sha256:008a5916c0a0ca6f4f6ad64969f6a4ef6f03ce885a639f3d97fd53665754ce48
+    profiles: [offline-ai]
+    command: ["--config", "/gateway/offline.yaml", "--port", "4000"]
+    environment:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      LITELLM_MASTER_KEY: ${SWITCHBOARD_OFFLINE_MASTER_KEY:-}
+    volumes:
+      - ./config/litellm/offline.yaml:/gateway/offline.yaml:ro
+    networks: [offline-ai]
+    depends_on: [fake-model]
+  fake-model:
+    image: python:3.12.12-slim-bookworm
+    profiles: [offline-ai]
+    command: ["python", "-B", "/fixture/fake_model.py"]
+    environment:
+      PYTHONPATH: /core
+    volumes:
+      - ./scripts/fake_model.py:/fixture/fake_model.py:ro
+      - ./services/core/app:/core/app:ro
+      - ./packs/ecommerce_support/evals:/fixtures:ro
+    networks: [offline-ai]
+  offline-relay:
+    image: python:3.12.12-slim-bookworm
+    profiles: [offline-ai]
+    command: ["python", "-B", "/fixture/offline_relay.py"]
+    environment:
+      LITELLM_MASTER_KEY: ${SWITCHBOARD_OFFLINE_MASTER_KEY:-}
+    volumes:
+      - ./scripts/offline_relay.py:/fixture/offline_relay.py:ro
+    networks: [offline-ai, offline-host]
+    depends_on: [litellm]
+    ports:
+      - "127.0.0.1::4000"
   db-check:
     image: switchboard-db-check:pg16-pack-v1
     build:
@@ -22,3 +56,8 @@ services:
       - ./packs:/switchboard/packs:ro
     tmpfs:
       - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,mode=1777
+
+networks:
+  offline-ai:
+    internal: true
+  offline-host:
