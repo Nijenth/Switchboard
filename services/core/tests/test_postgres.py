@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from hmac import digest
@@ -547,15 +548,131 @@ def test_concurrent_workers_claim_one_action(settings: Settings) -> None:
                 set_northwind(connection)
                 ready.wait()
                 row = connection.execute(
-                    """
-                    UPDATE public.actions SET status = 'executing', claimed_by = %s,
-                                              lease_expires_at = now() + interval '1 minute'
-                     WHERE tenant_id = %s AND id = %s AND status = 'proposed'
-                     RETURNING id
-                    """,
-                    (str(worker), NORTHWIND, action_id),
+                    "SELECT public.claim_mock_action(%s,%s,%s)",
+                    (action_id, str(worker), sha256(token_hex(32).encode()).digest()),
                 ).fetchone()
-                return row == (action_id,)
+                return row is not None and row[0] is not None
 
         with ThreadPoolExecutor(max_workers=2) as workers:
             assert sorted(workers.map(claim, range(2))) == [False, True]
+
+
+def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
+    tokens = {principal: token_hex(32) for principal in ("first", "second", "reconciler")}
+    config = replace(
+        settings,
+        execution_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "principal": principal,
+                    "token": token,
+                    "role": "reconciler" if principal == "reconciler" else "worker",
+                }
+                for principal, token in tokens.items()
+            ]
+        ),
+    )
+    action_ids = [uuid4(), uuid4()]
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        set_northwind(conn)
+        for action_id in action_ids:
+            conn.execute(
+                """
+                INSERT INTO public.actions (id, tenant_id, case_id, trace_id, idempotency_key,
+                    tool_key, risk_level, status) VALUES (%s,%s,%s,%s,%s,'po_lookup','read','proposed')
+                """,
+                (action_id, NORTHWIND, CASE_ID, uuid4(), str(action_id)),
+            )
+        with (
+            pytest.raises(psycopg.errors.InsufficientPrivilege, match="controlled transition"),
+            conn.transaction(),
+        ):
+            conn.execute(
+                "UPDATE public.actions SET status='executing' WHERE id=%s", (action_ids[0],)
+            )
+
+    with TestClient(create_app(config)) as client:
+        action, expired_action = (f"/actions/{action_id}" for action_id in action_ids)
+        worker_headers, other_headers, reconciler_headers = (
+            bearer(tokens[principal]) for principal in ("first", "second", "reconciler")
+        )
+        claim = client.post(action + "/claim", headers=worker_headers)
+        assert claim.status_code == 200, claim.text
+        grant = {"grant": claim.json()["grant"]}
+        completion = {**grant, "external_ref": "mock-reference"}
+        assert (
+            client.post(action + "/complete", headers=worker_headers, json=completion).status_code
+            == 409
+        )
+        assert (
+            client.post(action + "/consume", headers=other_headers, json=grant).status_code == 409
+        )
+        assert (
+            client.post(expired_action + "/consume", headers=worker_headers, json=grant).status_code
+            == 409
+        )
+        consumed = client.post(action + "/consume", headers=worker_headers, json=grant)
+        assert consumed.status_code == 200 and consumed.json()["adapter"] == "mock"
+        assert (
+            client.post(action + "/consume", headers=worker_headers, json=grant).status_code == 409
+        )
+        for _ in range(2):
+            assert (
+                client.post(
+                    action + "/complete", headers=worker_headers, json=completion
+                ).status_code
+                == 200
+            )
+
+        claim = client.post(expired_action + "/claim", headers=worker_headers)
+        assert claim.status_code == 200, claim.text
+        grant = {"grant": claim.json()["grant"]}
+        evidence = {"outcome": "inconclusive", "lookup_ref": "mock-lookup"}
+        assert (
+            client.post(
+                expired_action + "/reconcile", headers=worker_headers, json=evidence
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                expired_action + "/reconcile", headers=reconciler_headers, json=evidence
+            ).status_code
+            == 409
+        )
+        with psycopg.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user="switchboard_owner",
+            password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+            connect_timeout=3,
+        ) as owner:
+            verify_cluster(owner, "switchboard_owner")
+            # Fixture simulates time passing without sleeping for the full fixed lease.
+            owner.execute("ALTER TABLE public.actions DISABLE TRIGGER actions_enforce_rules")
+            owner.execute(
+                "UPDATE public.actions SET lease_expires_at=clock_timestamp() WHERE id=%s",
+                (action_ids[1],),
+            )
+            owner.execute("ALTER TABLE public.actions ENABLE TRIGGER actions_enforce_rules")
+            owner.execute(
+                "UPDATE public.execution_grants SET expires_at=clock_timestamp() WHERE action_id=%s",
+                (action_ids[1],),
+            )
+        assert (
+            client.post(expired_action + "/consume", headers=worker_headers, json=grant).status_code
+            == 409
+        )
+        unknown = client.post(
+            expired_action + "/reconcile", headers=reconciler_headers, json=evidence
+        )
+        assert unknown.json() == {"status": "unknown_outcome"}
+        final = client.post(
+            expired_action + "/reconcile",
+            headers=reconciler_headers,
+            json={**evidence, "outcome": "absent", "lookup_ref": "mock-authoritative-lookup"},
+        )
+        assert final.json() == {"status": "failed"}
+        assert client.post(expired_action + "/claim", headers=worker_headers).status_code == 409
