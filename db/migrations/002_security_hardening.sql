@@ -314,15 +314,15 @@ $$;
 -- SECURITY DEFINER: under RLS the app role only sees its own tenant's rows, but the chain
 -- must link to the true latest row across all tenants.
 CREATE OR REPLACE FUNCTION audit_log_chain() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE last_seq bigint; last_hash text;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('audit_log_chain'));   -- serialize chain appends
-  SELECT chain_seq, row_hash INTO last_seq, last_hash FROM audit_log ORDER BY chain_seq DESC NULLS LAST LIMIT 1;
+  SELECT chain_seq, row_hash INTO last_seq, last_hash FROM public.audit_log ORDER BY chain_seq DESC NULLS LAST LIMIT 1;
   NEW.created_at := clock_timestamp();
   NEW.chain_seq  := coalesce(last_seq, 0) + 1;
   NEW.prev_hash  := coalesce(last_hash, 'GENESIS');
-  NEW.row_hash   := audit_row_hash(NEW.chain_seq, NEW.prev_hash, NEW);
+  NEW.row_hash   := public.audit_row_hash(NEW.chain_seq, NEW.prev_hash, NEW);
   RETURN NEW;
 END $$;
 
@@ -346,6 +346,7 @@ ALTER TABLE audit_log ADD CONSTRAINT audit_log_chain_seq_key UNIQUE (chain_seq);
 
 CREATE TRIGGER audit_log_chain BEFORE INSERT ON audit_log
   FOR EACH ROW EXECUTE FUNCTION audit_log_chain();
+REVOKE ALL ON FUNCTION audit_log_chain() FROM PUBLIC;
 
 -- Returns 'OK' or the first broken link. Run daily (wf_audit_verify) and anchor the
 -- latest row_hash outside the DB (Slack message / MinIO object-lock bucket).
@@ -408,11 +409,14 @@ GRANT EXECUTE ON FUNCTION app_current_tenant() TO app_core, app_config_loader, a
 -- Ingest must resolve tenant from an inbound address BEFORE tenant context exists.
 -- SECURITY DEFINER exposes exactly this lookup and nothing else.
 CREATE OR REPLACE FUNCTION resolve_channel_endpoint(p_channel text, p_address text)
-RETURNS TABLE (tenant_id uuid, tenant_pack_id uuid, endpoint_id uuid)
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
-  SELECT e.tenant_id, e.tenant_pack_id, e.id
-    FROM channel_endpoints e JOIN tenants t ON t.id = e.tenant_id
+RETURNS TABLE (tenant_id uuid, tenant_pack_id uuid, endpoint_id uuid, pack_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+  SELECT e.tenant_id, e.tenant_pack_id, e.id, tp.pack_id
+    FROM public.channel_endpoints e
+    JOIN public.tenants t ON t.id = e.tenant_id
+    LEFT JOIN public.tenant_packs tp ON tp.tenant_id = e.tenant_id AND tp.id = e.tenant_pack_id
    WHERE e.channel = p_channel AND e.address = p_address AND e.active AND t.status = 'active'
+     AND (e.tenant_pack_id IS NULL OR tp.enabled)
 $$;
 REVOKE ALL ON FUNCTION resolve_channel_endpoint(text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION resolve_channel_endpoint(text, text) TO app_core;

@@ -11,6 +11,10 @@ INSERT INTO cases (id, tenant_id, tenant_pack_id, pack_id, channel, external_thr
   ('91000000-0000-0000-0000-000000000004', '91000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000002',
    '30000000-0000-0000-0000-000000000001', 'email', 'acme-th-1');
 
+UPDATE tenant_packs SET enabled = false WHERE id = '91000000-0000-0000-0000-000000000002';
+INSERT INTO channel_endpoints (tenant_id, tenant_pack_id, channel, address) VALUES
+  ('91000000-0000-0000-0000-000000000001', '91000000-0000-0000-0000-000000000002', 'email', 'support@acme.example');
+
 -- Northwind invoice case + message
 INSERT INTO cases (id, tenant_id, tenant_pack_id, pack_id, channel, external_thread_id) VALUES
   ('92000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', '40000000-0000-0000-0000-000000000003',

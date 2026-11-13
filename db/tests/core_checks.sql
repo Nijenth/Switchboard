@@ -14,6 +14,20 @@ SELECT pg_temp.expect_value('ingest can resolve tenant from inbound address with
   $q$SELECT tenant_id::text FROM resolve_channel_endpoint('email','invoices@northwind.example')$q$,
   '10000000-0000-0000-0000-000000000001');
 
+SELECT pg_temp.expect_value('resolver returns the enabled pack version',
+  $q$SELECT pack_id::text FROM resolve_channel_endpoint('email','invoices@northwind.example')$q$,
+  '30000000-0000-0000-0000-000000000003');
+SELECT pg_temp.expect_value('resolver rejects a disabled mapped pack',
+  $q$SELECT count(*)::text FROM resolve_channel_endpoint('email','support@acme.example')$q$, '0');
+SELECT pg_temp.expect_value('resolver allows a shared inbox without a pack',
+  $q$SELECT (pack_id IS NULL AND tenant_pack_id IS NULL)::text
+       FROM resolve_channel_endpoint('email','hello@northwind.example')$q$, 'true');
+SELECT pg_temp.expect_value('privileged functions use a trusted search path',
+  $q$SELECT count(*)::text FROM pg_proc
+      WHERE oid IN ('public.resolve_channel_endpoint(text,text)'::regprocedure,
+                    'public.audit_log_chain()'::regprocedure)
+        AND 'search_path=pg_catalog, public, pg_temp' = ANY(proconfig)$q$, '2');
+
 SELECT set_config('app.tenant_id', '10000000-0000-0000-0000-000000000001', true) \g /dev/null
 SELECT pg_temp.expect_value('Northwind context cannot see Acme''s case',
   $q$SELECT count(*)::text FROM cases WHERE id='91000000-0000-0000-0000-000000000004'$q$, '0');
