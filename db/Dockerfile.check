@@ -1,0 +1,6 @@
+FROM python:3.12.12-slim-bookworm AS pack-runtime
+COPY scripts/requirements-packs.txt /tmp/requirements-packs.txt
+RUN python -m pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements-packs.txt
+
+FROM pgvector/pgvector:0.8.7-pg16-bookworm
+COPY --from=pack-runtime /usr/local/ /usr/local/

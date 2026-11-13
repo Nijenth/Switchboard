@@ -3,4 +3,6 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/db_common.sh
 
+python3 scripts/load_packs
 apply_db_sql db/seeds
+python3 scripts/load_packs --knowledge-tenant 10000000-0000-0000-0000-000000000001

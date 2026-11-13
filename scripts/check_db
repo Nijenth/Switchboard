@@ -79,6 +79,7 @@ fi
 printf 'Running database safety checks\n'
 db_psql --file=db/tests/safety_checks.sql
 bash scripts/check_migrations
+bash scripts/check_pack_sync
 
 # Test fixtures must be visible to the independently authenticated sessions.
 db_psql --single-transaction --file=db/tests/check_fixtures.sql

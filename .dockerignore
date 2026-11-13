@@ -1,0 +1,5 @@
+**
+!db/
+!db/Dockerfile.check
+!scripts/
+!scripts/requirements-packs.txt

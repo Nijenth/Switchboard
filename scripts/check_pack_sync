@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+source scripts/db_common.sh
+
+work=$(mktemp -d "${SWITCHBOARD_DB_SOCKET}/pack-check.XXXXXXXX")
+cp -R -- packs "$work/"
+printf '\nSame-version change fixture.\n' >> "$work/packs/ecommerce_support/README.md"
+if result=$(python3 scripts/load_packs --packs-dir "$work/packs" 2>&1); then
+    printf 'Same-version pack change was accepted\n' >&2
+    exit 1
+fi
+[[ $result == *'released checksum changed'* ]] || { printf '%s\n' "$result" >&2; exit 1; }
+printf 'PASS same-version pack change refused\n'
+
+db_psql_as switchboard_config_loader "$SWITCHBOARD_CONFIG_LOADER_PASSWORD" switchboard_test \
+  --file=db/tests/config_loader_checks.sql

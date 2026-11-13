@@ -1,6 +1,9 @@
 services:
   db-check:
-    image: pgvector/pgvector:0.8.7-pg16-bookworm
+    image: switchboard-db-check:pg16-pack-v1
+    build:
+      context: .
+      dockerfile: db/Dockerfile.check
     profiles: [test]
     user: postgres
     network_mode: none
@@ -16,5 +19,6 @@ services:
     volumes:
       - ./db:/switchboard/db:ro
       - ./scripts:/switchboard/scripts:ro
+      - ./packs:/switchboard/packs:ro
     tmpfs:
       - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,mode=1777
