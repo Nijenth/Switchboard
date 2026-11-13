@@ -4,6 +4,7 @@ from shutil import copytree
 from typing import Any
 
 import pytest
+import yaml
 
 from scripts.pack_validation import PackError, read_catalog
 
@@ -50,7 +51,7 @@ def test_catalog_refuses_invalid_fixture(
 ) -> None:
     root = copytree(PACKS, tmp_path / "packs")
     path = root / "ecommerce_support" / filename
-    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    data: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
     match mutation:
         case "bad_version":
             data["version"] = 0

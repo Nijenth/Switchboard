@@ -1,94 +1,60 @@
-{
-  "version": 1,
-  "rules": [
-    {
-      "id": "SPAM_OR_AUTO",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "spam_or_auto"
-      },
-      "then": {
-        "decision": "ignore",
-        "reason": "Handle spam or auto"
-      }
-    },
-    {
-      "id": "SHIPPING_DELAY",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "shipping_delay"
-      },
-      "then": {
-        "decision": "needs_approval",
-        "reason": "Handle shipping delay"
-      }
-    },
-    {
-      "id": "RETURNS_REFUNDS",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "returns_refunds"
-      },
-      "then": {
-        "decision": "needs_approval",
-        "reason": "Handle returns refunds"
-      }
-    },
-    {
-      "id": "PAYMENT_ISSUE",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "payment_issue"
-      },
-      "then": {
-        "decision": "needs_approval",
-        "reason": "Handle payment issue"
-      }
-    },
-    {
-      "id": "ORDER_STATUS",
-      "when": {
-        "all": [
-          {
-            "field": "classification.intent_key",
-            "op": "eq",
-            "value": "order_status"
-          },
-          {
-            "field": "case.identity_verified",
-            "op": "eq",
-            "value": true
-          }
-        ]
-      },
-      "then": {
-        "decision": "auto",
-        "reason": "Handle order status",
-        "allow_tools": [
-          "kb_search",
-          "send_reply"
-        ]
-      }
-    },
-    {
-      "id": "PRODUCT_QUESTION",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "product_question"
-      },
-      "then": {
-        "decision": "auto",
-        "reason": "Handle product question",
-        "allow_tools": [
-          "kb_search",
-          "send_reply"
-        ]
-      }
-    }
-  ]
-}
+version: 1
+rules:
+  - id: SPAM_OR_AUTO
+    when:
+      field: classification.intent_key
+      op: eq
+      value: spam_or_auto
+    then:
+      decision: ignore
+      reason: Handle spam or auto
+  - id: SHIPPING_DELAY
+    when:
+      field: classification.intent_key
+      op: eq
+      value: shipping_delay
+    then:
+      decision: needs_approval
+      reason: Handle shipping delay
+  - id: RETURNS_REFUNDS
+    when:
+      field: classification.intent_key
+      op: eq
+      value: returns_refunds
+    then:
+      decision: needs_approval
+      reason: Handle returns refunds
+  - id: PAYMENT_ISSUE
+    when:
+      field: classification.intent_key
+      op: eq
+      value: payment_issue
+    then:
+      decision: needs_approval
+      reason: Handle payment issue
+  - id: ORDER_STATUS
+    when:
+      all:
+        - field: classification.intent_key
+          op: eq
+          value: order_status
+        - field: case.identity_verified
+          op: eq
+          value: true
+    then:
+      decision: auto
+      reason: Handle order status
+      allow_tools:
+        - kb_search
+        - send_reply
+  - id: PRODUCT_QUESTION
+    when:
+      field: classification.intent_key
+      op: eq
+      value: product_question
+    then:
+      decision: auto
+      reason: Handle product question
+      allow_tools:
+        - kb_search
+        - send_reply

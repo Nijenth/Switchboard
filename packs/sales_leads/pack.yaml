@@ -1,42 +1,27 @@
-{
-  "input_channels": [
-    "web_form",
-    "email"
-  ],
-  "default_queue": "sales",
-  "thresholds": {
-    "auto_confidence": 0.8,
-    "field_confidence": 0.85
-  },
-  "key": "sales_leads",
-  "version": 1,
-  "name": "Sales Lead Qualification",
-  "description": "Qualify inbound leads, enrich and score them, update CRM, offer meetings, alert sales.",
-  "intents": [
-    {
-      "key": "wholesale_inquiry",
-      "description": "Wants to buy in bulk / stock our products",
-      "default_priority": "high"
-    },
-    {
-      "key": "partnership",
-      "description": "Collaboration, affiliate, co-marketing",
-      "default_priority": "normal"
-    },
-    {
-      "key": "general_sales",
-      "description": "Pricing or availability question pre-purchase",
-      "default_priority": "normal"
-    },
-    {
-      "key": "vendor_pitch",
-      "description": "Someone trying to sell to us",
-      "default_priority": "low"
-    },
-    {
-      "key": "spam_or_auto",
-      "description": "Spam, auto-replies",
-      "default_priority": "low"
-    }
-  ]
-}
+input_channels:
+  - web_form
+  - email
+default_queue: sales
+thresholds:
+  auto_confidence: 0.8
+  field_confidence: 0.85
+key: sales_leads
+version: 1
+name: Sales Lead Qualification
+description: Qualify inbound leads, enrich and score them, update CRM, offer meetings, alert sales.
+intents:
+  - key: wholesale_inquiry
+    description: Wants to buy in bulk / stock our products
+    default_priority: high
+  - key: partnership
+    description: Collaboration, affiliate, co-marketing
+    default_priority: normal
+  - key: general_sales
+    description: Pricing or availability question pre-purchase
+    default_priority: normal
+  - key: vendor_pitch
+    description: Someone trying to sell to us
+    default_priority: low
+  - key: spam_or_auto
+    description: Spam, auto-replies
+    default_priority: low

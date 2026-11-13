@@ -1,29 +1,18 @@
-{
-  "version": 1,
-  "rules": [
-    {
-      "id": "SPAM_OR_AUTO",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "spam_or_auto"
-      },
-      "then": {
-        "decision": "ignore",
-        "reason": "Handle spam or auto"
-      }
-    },
-    {
-      "id": "WHOLESALE_INQUIRY",
-      "when": {
-        "field": "classification.intent_key",
-        "op": "eq",
-        "value": "wholesale_inquiry"
-      },
-      "then": {
-        "decision": "needs_approval",
-        "reason": "Handle wholesale inquiry"
-      }
-    }
-  ]
-}
+version: 1
+rules:
+  - id: SPAM_OR_AUTO
+    when:
+      field: classification.intent_key
+      op: eq
+      value: spam_or_auto
+    then:
+      decision: ignore
+      reason: Handle spam or auto
+  - id: WHOLESALE_INQUIRY
+    when:
+      field: classification.intent_key
+      op: eq
+      value: wholesale_inquiry
+    then:
+      decision: needs_approval
+      reason: Handle wholesale inquiry

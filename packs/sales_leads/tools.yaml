@@ -1,34 +1,13 @@
-{
-  "tools": [
-    {
-      "key": "kb_search"
-    },
-    {
-      "key": "company_enrich"
-    },
-    {
-      "key": "crm_upsert_contact"
-    },
-    {
-      "key": "crm_create_deal"
-    },
-    {
-      "key": "calendar_find_slots"
-    },
-    {
-      "key": "meeting_book",
-      "approval": {
-        "role": "agent"
-      }
-    },
-    {
-      "key": "send_reply",
-      "approval": {
-        "role": "agent"
-      }
-    },
-    {
-      "key": "notify_slack"
-    }
-  ]
-}
+tools:
+  - key: kb_search
+  - key: company_enrich
+  - key: crm_upsert_contact
+  - key: crm_create_deal
+  - key: calendar_find_slots
+  - key: meeting_book
+    approval:
+      role: agent
+  - key: send_reply
+    approval:
+      role: agent
+  - key: notify_slack

@@ -1,42 +1,28 @@
-{
-  "input_channels": [
-    "email",
-    "api"
-  ],
-  "default_queue": "accounts_payable",
-  "thresholds": {
-    "auto_confidence": 0.85,
-    "field_confidence": 0.9
-  },
-  "key": "invoice_processing",
-  "version": 1,
-  "name": "Invoice Processing",
-  "description": "Extract supplier invoices, match to POs, detect duplicates/fraud, post bills, route payments for approval.",
-  "intents": [
-    {
-      "key": "supplier_invoice",
-      "description": "A bill requesting payment",
-      "default_priority": "normal"
-    },
-    {
-      "key": "credit_note",
-      "description": "A credit against a prior invoice",
-      "default_priority": "normal"
-    },
-    {
-      "key": "payment_reminder",
-      "description": "Supplier chasing an unpaid invoice",
-      "default_priority": "high"
-    },
-    {
-      "key": "bank_detail_change",
-      "description": "Supplier asks to change payment details",
-      "default_priority": "urgent"
-    },
-    {
-      "key": "not_an_invoice",
-      "description": "Anything else sent to the AP inbox",
-      "default_priority": "low"
-    }
-  ]
-}
+input_channels:
+  - email
+  - api
+default_queue: accounts_payable
+thresholds:
+  auto_confidence: 0.85
+  field_confidence: 0.9
+key: invoice_processing
+version: 1
+name: Invoice Processing
+description: Extract supplier invoices, match to POs, detect duplicates/fraud, post bills, route payments
+  for approval.
+intents:
+  - key: supplier_invoice
+    description: A bill requesting payment
+    default_priority: normal
+  - key: credit_note
+    description: A credit against a prior invoice
+    default_priority: normal
+  - key: payment_reminder
+    description: Supplier chasing an unpaid invoice
+    default_priority: high
+  - key: bank_detail_change
+    description: Supplier asks to change payment details
+    default_priority: urgent
+  - key: not_an_invoice
+    description: Anything else sent to the AP inbox
+    default_priority: low
