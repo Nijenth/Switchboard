@@ -7,6 +7,7 @@ from uuid import UUID
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from app.guardrails import redact_text
 from app.schemas.ingest import IngestInput, IngestResult
 
 
@@ -80,12 +81,18 @@ def ingest(
         )
 
     case_id = get_case(connection, payload, tenant_id, tenant_pack_id, pack_id, endpoint_id)
+    redacted = redact_text(
+        payload.body_text,
+        sender_name=payload.sender.name or "",
+        sender_address=payload.sender.address,
+    )
     message = connection.execute(
         """
         INSERT INTO public.messages (
             tenant_id, case_id, endpoint_id, trace_id, idempotency_key, request_hash, direction,
-            channel, external_message_id, sender_address, subject, body_text, form_fields, received_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, 'inbound', %s, %s, %s, %s, %s, %s, %s)
+            channel, external_message_id, sender_address, subject, body_text, body_redacted,
+            form_fields, received_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, 'inbound', %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -100,6 +107,7 @@ def ingest(
             payload.sender.address,
             payload.subject,
             payload.body_text,
+            redacted,
             Jsonb(payload.form_fields),
             payload.received_at,
         ),

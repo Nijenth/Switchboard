@@ -24,7 +24,7 @@ jobs:
           python -m ruff check .
           python -m ruff format --check .
           python -m mypy app
-          python -m pytest -q tests/test_health.py tests/test_ingest.py tests/test_audit_checkpoint.py
+          python -m pytest -q tests/test_health.py tests/test_ingest.py tests/test_audit_checkpoint.py tests/test_guardrails.py
         working-directory: services/core
 
   packs:

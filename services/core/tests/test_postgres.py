@@ -128,6 +128,7 @@ def test_ingest_deduplicates_and_records_one_audit_trail(
 ) -> None:
     payload = make_payload(INVOICES)
     payload["external_thread_id"] = None
+    payload["body_text"] = "Please contact fixture@example.test about order NW-12345."
 
     def deliver() -> dict[str, object]:
         response = client.post("/ingest", json=payload, headers=bearer(credentials[INVOICES]))
@@ -153,7 +154,7 @@ def test_ingest_deduplicates_and_records_one_audit_trail(
         connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
         message = connection.execute(
             """
-            SELECT m.case_id, m.endpoint_id, m.body_text, m.form_fields, c.pack_id
+            SELECT m.case_id, m.endpoint_id, m.body_text, m.body_redacted, m.form_fields, c.pack_id
             FROM public.messages m JOIN public.cases c ON c.tenant_id = m.tenant_id AND c.id = m.case_id
             WHERE m.tenant_id = %s AND m.id = %s
             """,
@@ -163,6 +164,7 @@ def test_ingest_deduplicates_and_records_one_audit_trail(
             UUID(str(first["case_id"])),
             UUID(str(first["endpoint_id"])),
             payload["body_text"],
+            "Please contact [EMAIL] about order NW-12345.",
             payload["form_fields"],
             UUID("30000000-0000-0000-0000-000000000003"),
         )
