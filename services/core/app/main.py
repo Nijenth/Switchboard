@@ -8,8 +8,8 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from psycopg import Error
-from psycopg_pool import TooManyRequests
+from psycopg import DataError, Error, IntegrityError, OperationalError
+from psycopg_pool import PoolTimeout, TooManyRequests
 from pydantic import BaseModel
 
 from app.adapters.db import Settings, create_pool
@@ -82,7 +82,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from None
         except IngressScopeMismatch:
             raise HTTPException(403, "Ingress scope mismatch") from None
-        except (Error, TooManyRequests):
+        except DataError:
+            raise HTTPException(422, "Invalid ingest data") from None
+        except IntegrityError:
+            raise HTTPException(409, "Ingest data conflicts with existing records") from None
+        except (OperationalError, PoolTimeout, TooManyRequests):
             raise HTTPException(503, "Ingest unavailable") from None
+        except Error:
+            raise HTTPException(500, "Ingest failed") from None
 
     return app

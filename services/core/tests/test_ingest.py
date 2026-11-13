@@ -1,15 +1,21 @@
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg import DataError, IntegrityError, OperationalError, ProgrammingError
+from psycopg.errors import LockNotAvailable, QueryCanceled
+from psycopg_pool import PoolTimeout, TooManyRequests
 
 from app.adapters.db import Settings
 from app.main import create_app
 
 
-@pytest.mark.parametrize("failure", ["missing_token", "attachment", "malformed"])
+@pytest.mark.parametrize(
+    "failure", ["missing_token", "attachment", "malformed", "nul_body", "nul_key", "nul_nested"]
+)
 def test_ingest_rejects_unsupported_requests_before_database_access(
     monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -35,6 +41,12 @@ def test_ingest_rejects_unsupported_requests_before_database_access(
         ]
     if failure == "malformed":
         payload["channel"] = "invalid"
+    if failure == "nul_body":
+        payload["body_text"] = "Fixture text\0"
+    if failure == "nul_key":
+        payload["form_fields"] = {"nested": [{"bad\0key": "Fixture text"}]}
+    if failure == "nul_nested":
+        payload["form_fields"] = {"nested": ["Fixture text\0"]}
     headers = {} if failure == "missing_token" else {"Authorization": "Bearer " + "a" * 64}
     settings = Settings("unused", 5432, "unused", "unused", "health-test-credential" * 2)
     with TestClient(create_app(settings)) as client:
@@ -42,3 +54,44 @@ def test_ingest_rejects_unsupported_requests_before_database_access(
     assert response.status_code == (401 if failure == "missing_token" else 422)
     assert "Fixture text" not in response.text
     pool.connection.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (DataError, 422),
+        (IntegrityError, 409),
+        (OperationalError, 503),
+        (QueryCanceled, 503),
+        (LockNotAvailable, 503),
+        (PoolTimeout, 503),
+        (TooManyRequests, 503),
+        (ProgrammingError, 500),
+    ],
+)
+def test_ingest_classifies_database_errors(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception], status: int
+) -> None:
+    connection = Mock()
+    connection.transaction.return_value = nullcontext()
+    pool = Mock()
+    pool.connection.return_value = nullcontext(connection)
+    monkeypatch.setattr("app.main.create_pool", lambda settings: pool)
+    monkeypatch.setattr("app.main.ingest", Mock(side_effect=error("private database detail")))
+    settings = Settings("unused", 5432, "unused", "unused", "health-test-credential" * 2)
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/ingest",
+            json={
+                "trace_id": str(uuid4()),
+                "idempotency_key": "test",
+                "channel": "email",
+                "endpoint_address": "fixture@example.test",
+                "sender": {"address": "sender@example.test"},
+                "body_text": r"literal \u0000",
+                "received_at": datetime.now(UTC).isoformat(),
+            },
+            headers={"Authorization": "Bearer " + "a" * 64},
+        )
+    assert response.status_code == status
+    assert "private database detail" not in response.text

@@ -1,7 +1,7 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 Channel = Literal["email", "web_chat", "web_form", "api", "whatsapp", "slack"]
 ExternalID = Annotated[str, Field(min_length=1, max_length=512)]
@@ -41,6 +41,20 @@ class IngestInput(BaseModel):
     )
     attachments: Annotated[list[Attachment], Field(max_length=0)] = Field(default_factory=list)
     received_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def reject_nul(self) -> "IngestInput":
+        pending = list(self.model_dump().values())
+        while pending:
+            value = pending.pop()
+            if isinstance(value, str) and "\0" in value:
+                raise ValueError("NUL characters are unsupported")
+            if isinstance(value, dict):
+                pending.extend(value)
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+        return self
 
 
 class IngestResult(BaseModel):
