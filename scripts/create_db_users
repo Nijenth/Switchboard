@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+source scripts/db_common.sh
+
+: "${SWITCHBOARD_CORE_PASSWORD:?Missing core password}"
+: "${SWITCHBOARD_CONFIG_LOADER_PASSWORD:?Missing config loader password}"
+: "${SWITCHBOARD_N8N_MOCK_PASSWORD:?Missing n8n mock password}"
+: "${SWITCHBOARD_REPORTING_PASSWORD:?Missing reporting password}"
+
+db_psql <<'SQL'
+\set VERBOSITY terse
+\set SHOW_CONTEXT never
+\getenv core_password SWITCHBOARD_CORE_PASSWORD
+\getenv config_loader_password SWITCHBOARD_CONFIG_LOADER_PASSWORD
+\getenv n8n_mock_password SWITCHBOARD_N8N_MOCK_PASSWORD
+\getenv reporting_password SWITCHBOARD_REPORTING_PASSWORD
+
+SET log_min_error_statement = 'panic';
+BEGIN;
+CREATE ROLE switchboard_core LOGIN PASSWORD :'core_password' IN ROLE app_core;
+CREATE ROLE switchboard_config_loader LOGIN PASSWORD :'config_loader_password' IN ROLE app_config_loader;
+CREATE ROLE switchboard_n8n_mock LOGIN PASSWORD :'n8n_mock_password' IN ROLE app_n8n_mock;
+CREATE ROLE switchboard_reporting LOGIN PASSWORD :'reporting_password' IN ROLE app_reporting;
+COMMIT;
+SQL
