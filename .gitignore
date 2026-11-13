@@ -6,3 +6,11 @@ ai-ops-platform.zip
 
 # editor workspace files
 *.code-workspace
+
+# Python: local environments and tool caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
