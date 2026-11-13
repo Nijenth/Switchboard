@@ -140,11 +140,9 @@ INSERT INTO actions (id, tenant_id, case_id, trace_id, idempotency_key, tool_key
 INSERT INTO approval_requests (id, tenant_id, case_id, subject_type, subject_id, required_role, reason, sla_due_at) VALUES
   ('94000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001',
    'action', '93000000-0000-0000-0000-000000000002', 'finance', 'Payment', now() + interval '30 minutes');
-UPDATE actions SET amount = 100000 WHERE id = '93000000-0000-0000-0000-000000000002';   -- swapped after request
-
-SELECT pg_temp.expect_error('approval is refused when the payload changed after the request',
-  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000002','20000000-0000-0000-0000-000000000003','approved','api')$q$,
-  'changed after approval was requested');
+SELECT pg_temp.expect_error('request freezes a proposed action payload',
+  $q$UPDATE actions SET amount = 100000 WHERE id = '93000000-0000-0000-0000-000000000002'$q$,
+  'payload is frozen');
 
 \echo
 \echo '== 4. Execution: claims, concurrency, state machine =='
@@ -189,14 +187,14 @@ INSERT INTO actions (id, tenant_id, case_id, trace_id, idempotency_key, tool_key
 
 SELECT pg_temp.expect_error('cannot send a draft that is not approved',
   $q$UPDATE actions SET status='executing', claimed_by='w', lease_expires_at=now()+interval '1 minute' WHERE id='93000000-0000-0000-0000-000000000003'$q$,
-  'requires input.draft_id of an approved draft');
+  'requires a current policy allow');
 
 SELECT pg_temp.expect_error('only one live draft per inbound message',
   $q$INSERT INTO drafts (tenant_id, case_id, in_reply_to_message_id, channel, recipient, body)
      VALUES ('10000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000002','email','x@y.z','dup')$q$,
   'drafts_one_live_idx');
 
-UPDATE drafts SET status = 'approved' WHERE id = '95000000-0000-0000-0000-000000000001';
+\ir execution_authorization_checks.sql
 SELECT pg_temp.expect_error('approved draft text is frozen',
   $q$UPDATE drafts SET body='Also, please send your bank details.' WHERE id='95000000-0000-0000-0000-000000000001'$q$,
   'content is frozen');
