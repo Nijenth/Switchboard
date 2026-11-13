@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+source scripts/db_common.sh
+
+: "${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}"
+: "${SWITCHBOARD_CORE_PASSWORD:?Missing core password}"
+: "${SWITCHBOARD_CONFIG_LOADER_PASSWORD:?Missing config loader password}"
+: "${SWITCHBOARD_N8N_MOCK_PASSWORD:?Missing n8n mock password}"
+: "${SWITCHBOARD_REPORTING_PASSWORD:?Missing reporting password}"
+
+if [[ "$(id -un)" != postgres || "$(stat -f -c %T /var/lib/postgresql/data)" != tmpfs ]]; then
+    printf 'Run this check as postgres on the disposable Compose tmpfs.\n' >&2
+    exit 1
+fi
+
+# Each invocation owns a fresh cluster and socket. Never connect to a pre-existing server.
+umask 077
+check_dir=$(mktemp -d /var/lib/postgresql/data/check.XXXXXXXX)
+export SWITCHBOARD_DB_SOCKET="$check_dir/socket"
+data_dir="$check_dir/pgdata"
+mkdir -- "$SWITCHBOARD_DB_SOCKET"
+
+printf 'Initializing disposable PostgreSQL cluster\n'
+initdb --pgdata="$data_dir" --username=switchboard_owner --auth=scram-sha-256 \
+    --pwfile=<(printf '%s\n' "$SWITCHBOARD_DB_OWNER_PASSWORD") --encoding=UTF8 --no-locale >/dev/null
+
+stop_db() {
+    if [[ -f "$data_dir/postmaster.pid" ]]; then
+        pg_ctl --pgdata="$data_dir" --mode=fast --wait stop >/dev/null
+    fi
+}
+trap stop_db EXIT
+pg_ctl --pgdata="$data_dir" --log="$check_dir/postgres.log" --wait \
+    --options="-c listen_addresses='' -c unix_socket_directories=$SWITCHBOARD_DB_SOCKET -c unix_socket_permissions=0700 -p 5432" \
+    start
+
+PGPASSWORD="$SWITCHBOARD_DB_OWNER_PASSWORD" createdb --no-password \
+    --host="$SWITCHBOARD_DB_SOCKET" --port=5432 --username=switchboard_owner \
+    --maintenance-db=postgres switchboard_test
+
+bash scripts/migrate
+bash scripts/seed
+bash scripts/create_db_users
+printf 'Running database safety checks\n'
+db_psql --file=db/tests/safety_checks.sql
