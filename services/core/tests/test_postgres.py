@@ -425,6 +425,43 @@ def test_decide_publishes_scoped_idempotent_policy(
         assert version == "engine:1+ecommerce_support:1"
 
 
+def test_model_risk_flags_persist_and_escalate(
+    client: TestClient, credentials: dict[str, str], settings: Settings
+) -> None:
+    if not settings.offline_gateway_url:
+        pytest.skip("run scripts/test_core.sh --offline-ai")
+    delivery = make_payload(SUPPORT)
+    delivery["body_text"] = "My order is late again. [fixture:risk-harassment]"
+    created = client.post("/ingest", json=delivery, headers=bearer(credentials[SUPPORT]))
+    assert created.status_code == 200
+    body = {key: created.json()[key] for key in ("case_id", "message_id")}
+    token, decide_token = token_hex(32), token_hex(32)
+    config = replace(
+        settings,
+        understand_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": token}]),
+        decide_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": decide_token}]),
+    )
+    with TestClient(create_app(config)) as api:
+        understood = api.post("/understand", json=body, headers=bearer(token))
+        assert understood.status_code == 200, understood.text
+        assert (understood.json()["decision"], understood.json()["flags"]) == (
+            "escalate",
+            ["harassment"],
+        )
+        decided = api.post("/decide", json=body, headers=bearer(decide_token))
+        assert decided.status_code == 200, decided.text
+        assert (decided.json()["decision"], decided.json()["rule_id"]) == ("escalate", "G1")
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        rows = conn.execute(
+            """SELECT method, intent_key, flags FROM public.classifications
+               WHERE tenant_id=%s AND message_id=%s""",
+            (NORTHWIND, body["message_id"]),
+        ).fetchall()
+        assert rows == [("llm", "other", ["harassment"])]
+
+
 def test_ingest_attaches_threads_and_scopes_duplicates_by_endpoint(
     client: TestClient, credentials: dict[str, str]
 ) -> None:

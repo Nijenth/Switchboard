@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from app.adapters.ingest import audit
 from app.ai_accounting import set_scope
 from app.api.understand import Credential
-from app.policy import decide
+from app.engine.policy import decide
 
 ToolKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{2,60}$")]
 
@@ -61,8 +61,15 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         contact_kind,
         contact_locale,
     ) = row
-    if pack_key != "ecommerce_support":
-        raise HTTPException(409, "Decision pipeline is unavailable for this pack")
+    # The engine stays pack-agnostic: any pinned pack that publishes rules and thresholds is
+    # decidable. Malformed rule content is handled inside the engine (INVALID_POLICY).
+    policy_rules = pack.get("rules") if isinstance(pack, dict) else None
+    if (
+        not isinstance(policy_rules, dict)
+        or "rules" not in policy_rules
+        or not isinstance(pack.get("thresholds"), dict)
+    ):
+        raise HTTPException(409, "Pinned pack has no published decision policy")
     latest = conn.execute(
         """
         SELECT id,trace_id FROM public.messages

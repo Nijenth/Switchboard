@@ -62,7 +62,8 @@ def completion(body: dict[str, Any], anthropic: bool) -> tuple[int, dict[str, An
         )
     else:
         intent = fixtures().get(customer, "other")
-        output = json.dumps({"intent_key": intent, "confidence": 0.99})
+        risk_flags = ["harassment"] if "[fixture:risk-harassment]" in customer else []
+        output = json.dumps({"intent_key": intent, "confidence": 0.99, "risk_flags": risk_flags})
 
     if anthropic:
         return 200, {

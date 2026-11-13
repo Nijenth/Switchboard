@@ -161,8 +161,14 @@ def rule_results(
             or (allowed and decision != "auto")
         ):
             raise InvalidRule("Invalid policy effect")
-        if matches(rule["when"], context, fields) is True:
-            results.append(Decision(decision, rule_id, source, reason, role, tuple(allowed), queue))
+        outcome = matches(rule["when"], context, fields)
+        # Missing data must never disable a rule that tightens the decision. Unknown outcomes
+        # still fail to match rules that would loosen it (auto and ignore).
+        if outcome is None and ORDER[decision] >= ORDER["needs_approval"]:
+            reason = f"{reason} (Applied because required decision data was missing.)"
+        elif outcome is not True:
+            continue
+        results.append(Decision(decision, rule_id, source, reason, role, tuple(allowed), queue))
     return results
 
 

@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import sleep
 from typing import Any, Literal
 
@@ -25,6 +25,16 @@ class Understanding:
     decision: Literal["escalate", "needs_approval"]
     reason: str
     field_confidence: dict[str, float] = field(default_factory=dict)
+    flags: tuple[str, ...] = ()
+
+
+# Risk flags the model may propose. A flag can only tighten a decision (G1), never loosen it.
+MODEL_RISK_FLAGS = ("safety", "harassment", "legal_threat", "chargeback")
+
+
+def with_model_flags(result: Understanding, flags: tuple[str, ...]) -> Understanding:
+    # Keep the original reason: callers derive extraction status and validity from it.
+    return replace(result, decision="escalate", flags=flags) if flags else result
 
 
 def understand(
@@ -45,10 +55,11 @@ def understand(
     schema = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["intent_key", "confidence"],
+        "required": ["intent_key", "confidence", "risk_flags"],
         "properties": {
             "intent_key": {"enum": [intent["key"] for intent in pack["intents"]]},
             "confidence": probability,
+            "risk_flags": {"type": "array", "items": {"enum": list(MODEL_RISK_FLAGS)}},
         },
     }
 
@@ -76,11 +87,15 @@ def understand(
         )
     intent = classified["intent_key"]
     confidence = classified["confidence"]
+    flags = tuple(sorted(set(classified["risk_flags"])))
     if extraction := pack.get("extraction"):
         contract = assets.get("extraction_schema")
         if contract is None or "extract" not in prompts:
-            return Understanding(
-                intent, confidence, {}, language, "needs_approval", "pack_unavailable"
+            return with_model_flags(
+                Understanding(
+                    intent, confidence, {}, language, "needs_approval", "pack_unavailable"
+                ),
+                flags,
             )
         extraction_schema = {
             "type": "object",
@@ -97,8 +112,11 @@ def understand(
         }
         extracted = run("extract", extraction_schema)
         if extracted is None:
-            return Understanding(
-                intent, confidence, {}, language, "needs_approval", "extraction_unavailable"
+            return with_model_flags(
+                Understanding(
+                    intent, confidence, {}, language, "needs_approval", "extraction_unavailable"
+                ),
+                flags,
             )
         fields = extracted["data"]
         field_confidence = extracted["field_confidence"]
@@ -108,14 +126,17 @@ def understand(
             or field_confidence.get(key, 0) < pack["thresholds"]["field_confidence"]
             for key in required
         ):
-            return Understanding(
-                intent,
-                confidence,
-                fields,
-                language,
-                "needs_approval",
-                "extraction_confidence",
-                field_confidence,
+            return with_model_flags(
+                Understanding(
+                    intent,
+                    confidence,
+                    fields,
+                    language,
+                    "needs_approval",
+                    "extraction_confidence",
+                    field_confidence,
+                ),
+                flags,
             )
     else:
         fields = {}
@@ -125,8 +146,11 @@ def understand(
         if confidence < pack["thresholds"]["auto_confidence"]
         else "policy_review"
     )
-    return Understanding(
-        intent, confidence, fields, language, "needs_approval", reason, field_confidence
+    return with_model_flags(
+        Understanding(
+            intent, confidence, fields, language, "needs_approval", reason, field_confidence
+        ),
+        flags,
     )
 
 

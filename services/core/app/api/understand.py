@@ -139,10 +139,12 @@ def understand_router(
                 "language": result.language,
                 "extraction": result.extraction,
                 "field_confidence": result.field_confidence,
+                "flags": list(result.flags),
             }
             with pool.connection() as conn, conn.transaction():
                 set_scope(conn, tenant)
-                if result.decision == "escalate":
+                # A local guardrail escalated before any model classification ran.
+                if result.decision == "escalate" and result.intent is None:
                     conn.execute(
                         """
                         INSERT INTO public.classifications
@@ -169,8 +171,8 @@ def understand_router(
                         """
                         INSERT INTO public.classifications
                             (tenant_id,case_id,message_id,pack_id,intent_key,ai_run_id,
-                             method,priority,language,confidence)
-                        VALUES (%s,%s,%s,%s,%s,%s,'llm',%s,%s,%s)
+                             method,priority,language,confidence,flags)
+                        VALUES (%s,%s,%s,%s,%s,%s,'llm',%s,%s,%s,%s)
                         """,
                         (
                             tenant,
@@ -182,6 +184,7 @@ def understand_router(
                             priority,
                             result.language,
                             result.confidence,
+                            list(result.flags),
                         ),
                     )
                 if extraction_run := accounting.runs.get("extract"):

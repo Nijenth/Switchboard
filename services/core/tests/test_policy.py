@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 import yaml
 
-from app.policy import InvalidRule, decide, global_rules, matches
+from app.engine.policy import InvalidRule, decide, global_rules, matches
 
 PACK_DIR = Path(__file__).resolve().parents[3] / "packs" / "ecommerce_support"
 PACK: dict[str, Any] = yaml.safe_load((PACK_DIR / "pack.yaml").read_text(encoding="utf-8"))
@@ -56,6 +56,19 @@ def test_leaf_operators(op: str, yes: object, no: object) -> None:
             )
             is expected
         )
+
+
+def test_contains_operator_on_lists_and_strings() -> None:
+    fields = {"checks.items", "checks.text"}
+    context = {"checks": {"items": ["a", 3], "text": "hello"}}
+
+    def check(field: str, value: object) -> bool | None:
+        return matches({"field": field, "op": "contains", "value": value}, context, fields)
+
+    assert check("checks.items", 3) is True
+    assert check("checks.items", "b") is False
+    assert check("checks.text", "ell") is True
+    assert check("checks.text", "xyz") is False
 
 
 def test_nested_conditions_and_missing_data() -> None:
@@ -145,3 +158,34 @@ def test_tenant_can_only_tighten_and_money_role_survives_other_guards() -> None:
     assert (result.rule_id, result.required_role, result.allowed_tools) == ("G2", "manager", ())
     context["classification"]["flags"] = ["harassment"]
     assert decide(PACK, context, TOOLS, {"refund_issue"}).rule_id == "G1"
+
+
+def test_missing_data_applies_tightening_rules_but_not_loosening_rules() -> None:
+    # Regression: a tenant rule "escalate unless the contact is a customer" was skipped when
+    # the case had no contact, and the decision fell through to auto (ORDER_STATUS).
+    unless_customer = {
+        "id": "TENANT_UNLESS_CUSTOMER",
+        "when": {"not": {"field": "contact.kind", "op": "eq", "value": "customer"}},
+        "then": {"decision": "escalate", "reason": "Only known customers are automated."},
+    }
+    context = deepcopy(CONTEXT)
+    context["classification"]["intent_key"] = "order_status"
+    context["contact"] = {}
+    evidence = {"citations_ok": True, "output_ok": True}
+    assert decide(PACK, context, TOOLS, set(), **evidence).decision == "auto"
+    result = decide(PACK, context, TOOLS, set(), [unless_customer], **evidence)
+    assert (result.decision, result.rule_id) == ("escalate", "TENANT_UNLESS_CUSTOMER")
+    assert "required decision data was missing" in result.reason
+    context["contact"] = {"kind": "customer"}
+    assert decide(PACK, context, TOOLS, set(), [unless_customer], **evidence).decision == "auto"
+
+    # An unknown outcome must never authorize automatic handling or ignoring.
+    pack = deepcopy(PACK)
+    loosening = {
+        "id": "AUTO_FOR_VIP",
+        "when": {"field": "contact.kind", "op": "eq", "value": "vip"},
+        "then": {"decision": "auto", "reason": "VIP fast path.", "allow_tools": ["kb_search"]},
+    }
+    pack["rules"] = {"rules": [loosening]}
+    context["contact"] = {}
+    assert decide(pack, context, TOOLS, set(), **evidence).rule_id == "DEFAULT_REVIEW"

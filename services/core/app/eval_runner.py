@@ -14,8 +14,8 @@ from psycopg.types.json import Jsonb
 from app.adapters.ai import OfflineGateway, Provider
 from app.adapters.db import Settings, create_pool
 from app.ai_accounting import Accounting
+from app.engine.policy import decide
 from app.guardrails import redact_text
-from app.policy import decide
 from app.understanding import Understanding, understand
 
 PROVIDERS: tuple[Provider, Provider] = ("openai", "anthropic")
@@ -141,7 +141,8 @@ def run(
                         "classification": {
                             "intent_key": result.intent,
                             "confidence": result.confidence,
-                            "flags": [result.reason] if result.decision == "escalate" else [],
+                            "flags": list(result.flags)
+                            or ([result.reason] if result.decision == "escalate" else []),
                         },
                         "extraction": result.extraction,
                         "field_confidence": result.field_confidence,
