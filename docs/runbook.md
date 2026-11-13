@@ -7,10 +7,11 @@ Copy `.env.example` to `.env` and fill in the six local test passwords. Use sing
 From the repository root, with Docker Desktop running in Linux container mode, run:
 
 ```powershell
-docker compose --env-file .env --profile test run --rm --no-deps db-check
+docker compose --env-file .env.example --profile test build db-check
+docker compose --env-file .env --profile test run --pull never --rm --no-deps db-check
 ```
 
-The command creates a new PostgreSQL 16 cluster on temporary storage with no network and no published ports. The bootstrap superuser creates the database, roles, and extensions. The non-superuser schema owner applies the migrations and demo seed, then runs `db/tests/safety_checks.sql`. The core, mock, and reporting checks each open a separate connection with the respective login. Every connection uses the same private socket. Compose removes the container when the command exits.
+The command creates a new PostgreSQL 16 cluster on temporary storage with no network and no published ports. The bootstrap superuser creates the database, roles, and extensions. The schema owner applies migrations and seeds tenant and mock data. The config-loader login publishes the pack catalog. The suite checks safety invariants, the migration ledger, same-version pack edits, and the permissions of separately authenticated config-loader, core, mock, and reporting logins. Every connection uses the same private socket. Compose removes the container when the command exits. From Bash, source `scripts/test_db_env.sh` and use `.env.example` for the test command to generate disposable passwords.
 
 On a nonzero exit, use the first reported failure to identify the step that stopped. A missing password fails before PostgreSQL starts. A SQL error stops migration, seed, or role setup immediately. The safety suite prints each check and raises an error if any check fails. Each invocation starts with a fresh cluster, so a rerun after correcting the cause needs no reset.
 
@@ -30,11 +31,17 @@ Run `bash scripts/migrate` as the schema owner with `SWITCHBOARD_DB_SOCKET`, `SW
 
 If the ledger differs from the repository, recover the exact applied file and put the change in a new migration. A database with an existing Switchboard schema and no ledger needs an independently verified baseline before further migrations.
 
-Deferred engineering work includes structured JSON logs with `trace_id`, a Bash integration runner for CI, and a dependency lockfile.
+Deferred engineering work includes structured JSON logs with `trace_id` and a dependency lockfile.
+
+### Validate and publish packs
+
+With Python 3.12 and `scripts/requirements-packs.txt` installed, run `python scripts/load_packs --check` from the repository root. This requires no database. To publish, omit `--check` and set the intended database host or socket, database name, and `SWITCHBOARD_CONFIG_LOADER_PASSWORD`. The loader authenticates as `switchboard_config_loader`. Sync pack knowledge only with an explicit `--knowledge-tenant` whose enrollment is enabled and pinned to that version.
+
+If a released checksum differs, restore the released files or increment the version. A database containing packs from the old SQL seed needs a baseline review before the first file-based sync. See ADR 0010.
 
 ### Run the core integration tests
 
-Create a repository-root `.venv` with Python 3.12 and install `services/core/requirements-dev.txt` into it. With Docker Desktop running and the pgvector image from the SQL suite available locally, run `./scripts/test_core.ps1` from PowerShell.
+Create a repository-root `.venv` with Python 3.12 and install `services/core/requirements-dev.txt` into it. Build the SQL check image first. Run `./scripts/test_core.ps1` from PowerShell or activate the virtual environment and run `scripts/test_core.sh` from Bash.
 
 The script provisions a fresh PostgreSQL cluster with generated credentials. It publishes a temporary port on `127.0.0.1` and checks the cluster's randomly generated marker before tests write fixtures or send requests. The test app runs in process. The script removes its container and anonymous volumes on exit. A startup error stops the run before pytest, and a pytest failure makes the script exit nonzero.
 

@@ -1,0 +1,72 @@
+name: Phase 1 checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r services/core/requirements-dev.txt
+      - run: python scripts/scan_secrets.py
+      - run: |
+          python -m ruff check .
+          python -m ruff format --check .
+          python -m mypy app
+          python -m pytest -q tests/test_health.py tests/test_ingest.py tests/test_audit_checkpoint.py
+        working-directory: services/core
+
+  packs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r services/core/requirements-dev.txt -r scripts/requirements-packs.txt -r scripts/requirements-packs-dev.txt
+      - run: |
+          python -m ruff check scripts/pack_validation.py scripts/pack_sync.py scripts/load_packs scripts/scan_secrets.py scripts/tests
+          python -m ruff format --check --line-length 100 scripts/pack_validation.py scripts/pack_sync.py scripts/load_packs scripts/scan_secrets.py scripts/tests
+          python -m mypy --strict scripts/pack_validation.py scripts/pack_sync.py scripts/load_packs scripts/scan_secrets.py
+          scripts/load_packs --check
+          python -m pytest -q scripts/tests
+
+  database:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.3.0
+        with:
+          persist-credentials: false
+      - run: docker compose --env-file .env.example --profile test build db-check
+      - run: |
+          source scripts/test_db_env.sh
+          docker compose --env-file .env.example --profile test run --pull never --rm --no-deps db-check
+
+  core-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r services/core/requirements-dev.txt
+      - run: docker compose --env-file .env.example --profile test build db-check
+      - run: scripts/test_core.sh
