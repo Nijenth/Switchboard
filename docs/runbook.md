@@ -26,6 +26,8 @@ An idempotency key is scoped to the authenticated endpoint. A retry must preserv
 
 Migration tracking with checksums is required before applying the migrations to a persistent database.
 
+Deferred engineering work includes structured JSON logs with `trace_id`, a Bash integration runner for CI, and a dependency lockfile.
+
 ### Run the core integration tests
 
 Create a repository-root `.venv` with Python 3.12 and install `services/core/requirements-dev.txt` into it. With Docker Desktop running and the pgvector image from the SQL suite available locally, run `./scripts/test_core.ps1` from PowerShell.

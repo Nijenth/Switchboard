@@ -18,6 +18,7 @@ NORTHWIND = UUID("10000000-0000-0000-0000-000000000001")
 ACME = UUID("91000000-0000-0000-0000-000000000001")
 INVOICES = "invoices@northwind.example"
 SUPPORT = "support@northwind.example"
+SHARED = "hello@northwind.example"
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +39,7 @@ def verify_cluster(connection: Connection[tuple[object, ...]], login: str) -> No
 
 @pytest.fixture(scope="module")
 def credentials(settings: Settings) -> dict[str, str]:
-    addresses = [INVOICES, SUPPORT, "support@acme.example", "hello@northwind.example"]
+    addresses = [INVOICES, SUPPORT, "support@acme.example", SHARED]
     tokens = {address: token_hex(32) for address in addresses}
     with psycopg.connect(
         host=settings.db_host,
@@ -200,6 +201,36 @@ def test_ingest_attaches_threads_and_scopes_duplicates_by_endpoint(
     assert first.json()["case_id"] == reply.json()["case_id"]
     assert first.json()["message_id"] != reply.json()["message_id"]
     assert first.json()["case_id"] != other.json()["case_id"]
+
+
+def test_shared_inbox_creates_an_unrouted_case(
+    client: TestClient, credentials: dict[str, str], settings: Settings
+) -> None:
+    response = client.post(
+        "/ingest", json=make_payload(SHARED), headers=bearer(credentials[SHARED])
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["tenant_id"] == str(NORTHWIND)
+    with (
+        create_pool(settings, max_size=1) as pool,
+        pool.connection() as connection,
+        connection.transaction(),
+    ):
+        verify_cluster(connection, "switchboard_core")
+        connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        row = connection.execute(
+            """
+            SELECT c.pack_id, c.tenant_pack_id, c.endpoint_id, m.endpoint_id, e.address
+            FROM public.cases c
+            JOIN public.messages m ON m.tenant_id = c.tenant_id AND m.case_id = c.id
+            JOIN public.channel_endpoints e ON e.tenant_id = c.tenant_id AND e.id = c.endpoint_id
+            WHERE c.tenant_id = %s AND c.id = %s AND m.id = %s
+            """,
+            (NORTHWIND, result["case_id"], result["message_id"]),
+        ).fetchone()
+        endpoint_id = UUID(result["endpoint_id"])
+        assert row == (None, None, endpoint_id, endpoint_id, SHARED)
 
 
 def test_core_pool_reuses_connection_after_commit_and_rollback(settings: Settings) -> None:
