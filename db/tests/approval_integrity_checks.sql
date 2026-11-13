@@ -91,3 +91,7 @@ SELECT pg_temp.expect_ok('finance approves the exact replacement draft',
        FROM approval_requests r JOIN drafts d ON d.id = r.subject_id WHERE d.body='Replacement'$q$);
 SELECT pg_temp.expect_ok('a valid human decision authorizes the replacement draft',
   $q$UPDATE drafts SET status='approved' WHERE body='Replacement'$q$);
+SELECT pg_temp.expect_error('an already approved draft cannot acquire a new review request',
+  $q$INSERT INTO approval_requests (tenant_id, case_id, subject_type, subject_id, reason)
+     SELECT tenant_id, case_id, 'draft', id, 'Fixture duplicate' FROM drafts WHERE body='Replacement'$q$,
+  'pending approval subject not found in this tenant/case');

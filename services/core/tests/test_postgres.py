@@ -325,6 +325,59 @@ def test_concurrent_reviewers_record_only_one_decision(settings: Settings) -> No
             assert count == (1,)
 
 
+def test_pending_request_serializes_with_payload_update(settings: Settings) -> None:
+    with create_pool(settings, max_size=2) as pool:
+        with pool.connection() as connection, connection.transaction():
+            set_northwind(connection)
+            action = connection.execute(
+                """
+                INSERT INTO public.actions (
+                    tenant_id, case_id, trace_id, idempotency_key, tool_key, risk_level, status
+                ) VALUES (%s, %s, %s, %s, 'invoice_schedule_payment', 'money', 'proposed')
+                RETURNING id
+                """,
+                (NORTHWIND, CASE_ID, uuid4(), str(uuid4())),
+            ).fetchone()
+            assert action is not None
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as workers,
+            pool.connection() as requester,
+            pool.connection() as editor,
+        ):
+            with requester.transaction():
+                set_northwind(requester)
+                requester.execute(
+                    """
+                    INSERT INTO public.approval_requests (
+                        tenant_id, case_id, subject_type, subject_id, reason
+                    ) VALUES (%s, %s, 'action', %s, 'Fixture approval')
+                    """,
+                    (NORTHWIND, CASE_ID, action[0]),
+                )
+
+                def edit() -> None:
+                    with editor.transaction():
+                        set_northwind(editor)
+                        editor.execute(
+                            "UPDATE public.actions SET amount = 1 WHERE id = %s", (action[0],)
+                        )
+
+                change = workers.submit(edit)
+                wait_until = monotonic() + 2
+                while monotonic() < wait_until:
+                    if requester.execute(
+                        "SELECT pg_backend_pid() = ANY(pg_blocking_pids(%s))",
+                        (editor.info.backend_pid,),
+                    ).fetchone() == (True,):
+                        break
+                    sleep(0.01)
+                else:
+                    pytest.fail("payload update did not wait for the approval subject lock")
+            with pytest.raises(psycopg.errors.RaiseException, match="payload is frozen"):
+                change.result(timeout=5)
+
+
 def test_approval_checks_sla_after_waiting_for_request_lock(settings: Settings) -> None:
     with create_pool(settings, max_size=2) as pool:
         with pool.connection() as connection, connection.transaction():

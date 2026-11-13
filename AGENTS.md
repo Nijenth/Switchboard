@@ -382,16 +382,14 @@ read-only to `app_core`. They change only through Git → CI → `load_packs`.
 
 ### Database-enforced invariants (proven by `db/tests/safety_checks.sql`)
 - Actions start as `proposed`/`pending_approval`. Risk level must match the registry. The tool must be allowed for the case's pack.
-- Legal state transitions only. `executing` requires a claim + lease. `unknown_outcome` must be reconciled, never blindly retried.
-- **Approval binding:** a request captures the payload hash. Approval fails if the payload changed. Payloads freeze once approval is requested. `approved_by` must be the reviewer who actually approved. The reviewer's role and tenant are checked in the DB.
-- `send_reply` can only send an approved draft from the same case. Approved draft text is frozen.
+- Legal state transitions only. `executing` requires a claim and a future lease. A failed action cannot be reclaimed.
+- **Approval binding:** the database snapshots the subject hash, required role, and SLA. A tenant-scoped transition locks the request, checks the database clock and reviewer role, and records at most one decision. Core is responsible for authenticating the reviewer interaction.
+- Automatic writes and external communications require a current case policy decision that allows the tool. External communications also require a same-case draft authorized for its exact payload by policy or human review.
 - Audit log is append-only and hash-chained. `verify_audit_chain()` detects edits.
 
 ### Known limits (do not claim otherwise)
-- A PostgreSQL **superuser or the table owner can bypass triggers and RLS**. Mitigations: services never
-  use those accounts; the audit hash chain makes tampering *detectable*; `wf_audit_verify` runs daily
-  and **anchors the latest `row_hash` outside the DB** (Slack post + MinIO object-lock bucket), which makes
-  it *provable*.
+- A PostgreSQL **superuser or the table owner can bypass triggers and RLS**. Running services use restricted logins. The owner-run verifier detects edits to the chain. A restricted full-chain verifier and an independently protected checkpoint are planned.
+- Reconciliation evidence, reviewer authentication, and execution grants need application and workflow wiring before mock outbound execution is enabled.
 - DB invariants prove the database refuses bad states. They do **not** prove the application, the n8n
   workflows or real integrations are safe. Those need their own tests (§12).
 - External APIs without idempotency keys (some CRMs) can still duplicate on a crash. The reconciler
