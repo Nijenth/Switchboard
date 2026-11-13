@@ -9,6 +9,14 @@ PII_PATTERNS = (
     ("SSN", re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")),
     ("CARD", re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?![ -]?\d)")),
     (
+        "ADDRESS",
+        re.compile(
+            r"\b\d{1,6}\s+(?:[\w'-]+\s+){1,5}"
+            r"(?:street|avenue|road|boulevard|lane|drive|court|place|st|ave|rd|blvd|ln|dr|ct)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "PHONE",
         re.compile(
             r"(?<![\w+])(?:\+\d{1,3}[ .-]?)?(?:\(\d{3}\)|\d{3})[ .-]\d{3}[ .-]\d{4}(?!\d)"

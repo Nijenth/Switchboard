@@ -19,7 +19,7 @@ def test_all_released_packs_validate() -> None:
         "sales_leads",
         "invoice_processing",
     }
-    assert len(packs[0].cases) == 10
+    assert len(packs[0].cases) == 50
 
 
 @pytest.mark.parametrize(
