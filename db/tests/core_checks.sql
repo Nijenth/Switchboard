@@ -55,6 +55,8 @@ SELECT pg_temp.expect_error('app cannot delete operational data',
 SELECT pg_temp.expect_ok('app can append to the audit log',
   $q$INSERT INTO audit_log (tenant_id, actor_type, actor_id, event_type)
      VALUES ('10000000-0000-0000-0000-000000000001','system','test','test.event')$q$);
+COMMIT;
+
+\ir tenant_context_checks.sql
 
 \ir check_results.sql
-ROLLBACK;
