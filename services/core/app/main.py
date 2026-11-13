@@ -1,15 +1,20 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from hmac import compare_digest
+from re import fullmatch
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from psycopg import Error
 from psycopg_pool import TooManyRequests
 from pydantic import BaseModel
 
 from app.adapters.db import Settings, create_pool
+from app.adapters.ingest import IngressScopeMismatch, InvalidIngressCredential, ingest
+from app.schemas.ingest import IngestInput, IngestResult
 
 
 class Health(BaseModel):
@@ -39,6 +44,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_: Request, _error: RequestValidationError) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": "Invalid request"})
+
     @app.get("/health", response_model=Health)
     def health(
         authorization: Annotated[str | None, Header()] = None,
@@ -55,5 +64,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 503, {"status": "unavailable", "database": "unavailable", "trace_id": str(trace_id)}
             ) from None
         return Health(status="ok", database="ok", trace_id=trace_id)
+
+    @app.post("/ingest", response_model=IngestResult)
+    def ingest_message(
+        payload: IngestInput,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> IngestResult:
+        token = bearer_token(authorization)
+        if not fullmatch(r"[0-9a-f]{64}", token):
+            raise HTTPException(401, "Invalid credential", headers={"WWW-Authenticate": "Bearer"})
+        try:
+            with pool.connection() as connection, connection.transaction():
+                return ingest(connection, payload, token)
+        except InvalidIngressCredential:
+            raise HTTPException(
+                401, "Invalid credential", headers={"WWW-Authenticate": "Bearer"}
+            ) from None
+        except IngressScopeMismatch:
+            raise HTTPException(403, "Ingress scope mismatch") from None
+        except (Error, TooManyRequests):
+            raise HTTPException(503, "Ingest unavailable") from None
 
     return app
