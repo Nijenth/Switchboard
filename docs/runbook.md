@@ -1,5 +1,28 @@
 # Switchboard runbook
 
+## Phase 2 offline AI checks
+
+Build the disposable database image and pull the pinned gateway images with
+`docker compose --profile offline-ai pull litellm fake-model`. With the Python 3.12
+workspace environment active, run `scripts/test_core.sh --offline-ai`. The harness
+starts a fresh disposable cluster, exercises the gateway over loopback, and compares both
+provider aliases on two repeats of the published ecommerce fixtures. It removes the test
+services on exit. The reported costs and latencies are fixture data and local timings.
+The fake server replays fixture labels. Its accuracy and agreement do not measure a model.
+The gate evaluates the understanding result, which remains approval-only or escalation until
+the decision pipeline is implemented. Rerun the safety gate against that pipeline before
+enabling automatic decisions.
+
+Keep the provider keys empty for this run. Future live configuration reads `OPENAI_API_KEY`
+and `ANTHROPIC_API_KEY` from local `.env` after model and spending approval. Langfuse stays
+disabled. See ADR 0011.
+
+Before real customer data, add a local multilingual PII detector with person-name recognition
+and locale-specific address parsing. Combine it with the existing pattern and known-contact
+checks, and evaluate recall on independently labeled multilingual messages. Hold content for
+review when the detector is unavailable or uncertain. The current fixtures track name and
+address misses by case ID and category without printing the spans.
+
 ## Run the database safety suite
 
 Copy `.env.example` to `.env` and fill in the six local test passwords. Use single-line, distinct random values. Keep `.env` local.
