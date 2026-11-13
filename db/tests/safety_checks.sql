@@ -73,6 +73,7 @@ SELECT pg_temp.expect_error('action cannot be created already executed',
 
 \echo
 \echo '== 3. Money actions & approval binding =='
+SELECT set_config('app.tenant_id', '10000000-0000-0000-0000-000000000001', true) \g /dev/null
 INSERT INTO actions (id, tenant_id, case_id, trace_id, idempotency_key, tool_key, risk_level, amount, currency, input, status) VALUES
   ('93000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001',
    gen_random_uuid(), 'pay-1', 'invoice_schedule_payment', 'money', 4800, 'USD', '{"bill":"LT-5521","vendor":"Loom & Thread"}', 'pending_approval');
@@ -100,30 +101,25 @@ SELECT pg_temp.expect_error('second pending request for the same action is rejec
   'approval_requests_one_pending_idx');
 
 SELECT pg_temp.expect_error('agent cannot approve a finance request',
-  $q$INSERT INTO approval_decisions (tenant_id, request_id, reviewer_id, decision)
-     VALUES ('10000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','approved')$q$,
+  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','approved','api')$q$,
   'cannot satisfy required role');
 
 SELECT pg_temp.expect_error('manager cannot approve a finance request',
-  $q$INSERT INTO approval_decisions (tenant_id, request_id, reviewer_id, decision)
-     VALUES ('10000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000002','approved')$q$,
+  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000002','approved','api')$q$,
   'cannot satisfy required role');
 
 SELECT pg_temp.expect_error('another tenant''s admin cannot approve',
-  $q$INSERT INTO approval_decisions (tenant_id, request_id, reviewer_id, decision)
-     VALUES ('10000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000003','approved')$q$,
+  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000003','approved','api')$q$,
   'not found in this tenant');
 
 SELECT pg_temp.expect_ok('finance can approve',
-  $q$INSERT INTO approval_decisions (tenant_id, request_id, reviewer_id, decision)
-     VALUES ('10000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000003','approved')$q$);
+  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000003','approved','api')$q$);
 
 SELECT pg_temp.expect_value('decision resolves the request automatically',
   $q$SELECT status FROM approval_requests WHERE id='94000000-0000-0000-0000-000000000001'$q$, 'approved');
 
 SELECT pg_temp.expect_error('resolved request cannot be decided again',
-  $q$INSERT INTO approval_decisions (tenant_id, request_id, reviewer_id, decision)
-     VALUES ('10000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000004','rejected')$q$,
+  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000004','rejected','api')$q$,
   'already approved');
 
 SELECT pg_temp.expect_error('approved_by must be the actual approving reviewer',
@@ -147,8 +143,7 @@ INSERT INTO approval_requests (id, tenant_id, case_id, subject_type, subject_id,
 UPDATE actions SET amount = 100000 WHERE id = '93000000-0000-0000-0000-000000000002';   -- swapped after request
 
 SELECT pg_temp.expect_error('approval is refused when the payload changed after the request',
-  $q$INSERT INTO approval_decisions (tenant_id, request_id, reviewer_id, decision)
-     VALUES ('10000000-0000-0000-0000-000000000001','94000000-0000-0000-0000-000000000002','20000000-0000-0000-0000-000000000003','approved')$q$,
+  $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000002','20000000-0000-0000-0000-000000000003','approved','api')$q$,
   'changed after approval was requested');
 
 \echo
