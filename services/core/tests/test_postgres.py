@@ -676,3 +676,24 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
         )
         assert final.json() == {"status": "failed"}
         assert client.post(expired_action + "/claim", headers=worker_headers).status_code == 409
+
+
+def test_audit_checkpoint_api_checks_previous_hash(settings: Settings) -> None:
+    token = token_hex(32)
+    with TestClient(create_app(replace(settings, audit_token=token))) as client:
+        genesis = {"chain_seq": 0, "row_hash": "GENESIS"}
+        assert (
+            client.post(
+                "/audit/verify", json=genesis, headers=bearer(settings.health_token)
+            ).status_code
+            == 403
+        )
+        current = client.post("/audit/verify", json=genesis, headers=bearer(token))
+        assert current.status_code == 200
+        head = current.json()
+        assert head["chain_seq"] > 0 and len(head["row_hash"]) == 64
+        assert client.post("/audit/verify", json=head, headers=bearer(token)).json() == head
+        mismatch = client.post(
+            "/audit/verify", json={**head, "row_hash": "0" * 64}, headers=bearer(token)
+        )
+        assert mismatch.status_code == 409

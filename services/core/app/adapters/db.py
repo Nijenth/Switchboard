@@ -18,6 +18,7 @@ class Settings:
     slack_app_id: str | None = None
     slack_signing_secret: str | None = field(default=None, repr=False)
     execution_credentials: str | None = field(default=None, repr=False)
+    audit_token: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -30,6 +31,7 @@ class Settings:
             slack_app_id=environ.get("SWITCHBOARD_SLACK_APP_ID"),
             slack_signing_secret=environ.get("SWITCHBOARD_SLACK_SIGNING_SECRET"),
             execution_credentials=environ.get("SWITCHBOARD_EXECUTION_CREDENTIALS"),
+            audit_token=environ.get("SWITCHBOARD_AUDIT_TOKEN"),
         )
 
     def __post_init__(self) -> None:
@@ -40,6 +42,12 @@ class Settings:
             raise ValueError("Invalid core database configuration")
         if len(self.health_token) < 32 or not self.health_token.isascii():
             raise ValueError("Configure a separate, randomly generated health token")
+        if self.audit_token is not None and (
+            len(self.audit_token) < 32
+            or not self.audit_token.isascii()
+            or self.audit_token == self.health_token
+        ):
+            raise ValueError("Configure a separate, randomly generated audit token")
 
 
 def check_login(connection: Connection[tuple[object, ...]]) -> None:

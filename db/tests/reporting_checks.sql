@@ -7,6 +7,8 @@ SELECT pg_temp.expect_error('reporting role cannot read raw messages',
   $q$SELECT count(*) FROM messages$q$, 'permission denied');
 SELECT pg_temp.expect_error('reporting cannot resolve ingress credentials',
   $q$SELECT count(*) FROM resolve_channel_endpoint(sha256(convert_to('invoice-fixture','UTF8')))$q$, 'permission denied');
+SELECT pg_temp.expect_error('reporting cannot use the full-chain verifier',
+  $q$SELECT * FROM public.verify_audit_checkpoint(0,'GENESIS')$q$, 'permission denied');
 SELECT pg_temp.expect_ok('reporting role can read KPI views',
   $q$SELECT count(*) FROM v_daily_kpis$q$);
 

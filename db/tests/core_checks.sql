@@ -64,6 +64,9 @@ SELECT pg_temp.expect_ok('app can append to the audit log',
   $q$INSERT INTO audit_log (tenant_id, actor_type, actor_id, event_type)
      VALUES ('10000000-0000-0000-0000-000000000001','system','test','test.event')$q$);
 \ir approval_integrity_checks.sql
+SELECT pg_temp.expect_value('restricted verifier reads the full chain under core RLS',
+  $q$SELECT (chain_seq > 0 AND length(row_hash) = 64 AND broken_at IS NULL)::text
+       FROM public.verify_audit_checkpoint(0,'GENESIS')$q$, 'true');
 COMMIT;
 
 \ir tenant_context_checks.sql
