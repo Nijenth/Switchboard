@@ -6,7 +6,7 @@ from uuid import UUID
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
-from app.adapters.ai import RESERVATION, OfflineGateway, Provider
+from app.adapters.ai import OfflineGateway, Provider
 from app.understanding import Step, StopAttempts, validate_output
 
 
@@ -40,6 +40,10 @@ class Accounting:
         instructions: str,
         schema: dict[str, Any],
     ) -> dict[str, Any] | None:
+        prepared = self.gateway.prepare(provider, instructions, self.redacted, schema)
+        if prepared is None:
+            raise StopAttempts
+        reservation = prepared.reservation
         with self.pool.connection() as conn, conn.transaction():
             self.scope(conn)
             conn.execute(
@@ -56,7 +60,7 @@ class Accounting:
                 """,
                 (self.tenant,),
             ).fetchone()
-            allowed = remaining is not None and remaining[0] >= RESERVATION
+            allowed = remaining is not None and remaining[0] >= reservation
             inserted = conn.execute(
                 """
                 INSERT INTO public.ai_runs (
@@ -75,7 +79,7 @@ class Accounting:
                     version,
                     provider != self.primary,
                     "error" if allowed else "budget_blocked",
-                    RESERVATION if allowed else 0,
+                    reservation if allowed else 0,
                     allowed,
                 ),
             ).fetchone()
@@ -86,7 +90,7 @@ class Accounting:
             raise StopAttempts
 
         start = monotonic()
-        completion = self.gateway.call(provider, instructions, self.redacted, schema)
+        completion = self.gateway.call(prepared)
         latency = round((monotonic() - start) * 1000)
         result = (
             validate_output(completion.output, schema) if completion.output is not None else None

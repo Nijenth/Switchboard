@@ -2,16 +2,38 @@
 
 import json
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from http.client import HTTPException
+from pathlib import Path
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+import yaml
+
 Provider = Literal["openai", "anthropic"]
-# The offline fixture charges a fixed amount per attempt, below this reservation.
-RESERVATION = Decimal("0.01")
+OFFLINE_CONFIG = Path(__file__).resolve().parents[4] / "config/litellm/offline.yaml"
+
+
+@dataclass(frozen=True)
+class ModelLimits:
+    max_input_tokens: int
+    max_tokens: int
+    input_price: Decimal
+    output_price: Decimal
+
+    def reservation(self) -> Decimal:
+        return (
+            self.max_input_tokens * self.input_price + self.max_tokens * self.output_price
+        ).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
+
+
+@dataclass(frozen=True)
+class PreparedCall:
+    alias: str
+    body: bytes
+    reservation: Decimal
 
 
 @dataclass(frozen=True)
@@ -45,11 +67,22 @@ class OfflineGateway:
             raise ValueError("Configure a loopback-only offline gateway URL")
         self.url = base.rstrip("/") + "/v1/chat/completions"
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
+        catalog = yaml.safe_load(OFFLINE_CONFIG.read_text(encoding="utf-8"))
+        self.limits = {
+            entry["model_name"]: ModelLimits(
+                entry["model_info"]["max_input_tokens"],
+                entry["model_info"]["max_output_tokens"],
+                Decimal(str(entry["model_info"]["input_cost_per_token"])),
+                Decimal(str(entry["model_info"]["output_cost_per_token"])),
+            )
+            for entry in catalog["model_list"]
+        }
 
-    def call(
+    def prepare(
         self, provider: Provider, instructions: str, redacted: str, schema: dict[str, Any]
-    ) -> Completion:
+    ) -> PreparedCall | None:
         alias = f"switchboard-{provider}"
+        limits = self.limits[alias]
         customer_json = json.dumps(redacted, ensure_ascii=True).replace("<", r"\u003c")
         body = {
             "model": alias,
@@ -60,15 +93,22 @@ class OfflineGateway:
                     "content": f"<customer_message>\n{customer_json}\n</customer_message>",
                 },
             ],
-            "max_tokens": 512,
+            "max_tokens": limits.max_tokens,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "switchboard_result", "schema": schema, "strict": True},
             },
         }
+        payload = json.dumps(body).encode()
+        if len(payload) > limits.max_input_tokens:
+            return None
+        return PreparedCall(alias, payload, limits.reservation())
+
+    def call(self, prepared: PreparedCall) -> Completion:
+        alias = prepared.alias
         request = Request(
             self.url,
-            json.dumps(body).encode(),
+            prepared.body,
             {"Content-Type": "application/json"},
         )
         try:
@@ -96,7 +136,7 @@ class OfflineGateway:
                 output,
                 input_tokens,
                 output_tokens,
-                cost if cost.is_finite() and 0 <= cost <= RESERVATION else None,
+                cost if cost.is_finite() and 0 <= cost <= prepared.reservation else None,
             )
         except HTTPError as error:
             status: Literal["timeout", "error"] = "timeout" if error.code in (408, 504) else "error"

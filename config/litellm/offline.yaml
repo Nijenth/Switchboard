@@ -7,6 +7,8 @@ model_list:
       timeout: 2
       temperature: 0.2
     model_info:
+      max_input_tokens: 16384
+      max_output_tokens: 512
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000005
   - model_name: switchboard-anthropic
@@ -16,6 +18,8 @@ model_list:
       api_key: fixture-only
       timeout: 2
     model_info:
+      max_input_tokens: 16384
+      max_output_tokens: 512
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000005
 router_settings:
