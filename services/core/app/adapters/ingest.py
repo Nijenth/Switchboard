@@ -1,4 +1,6 @@
+from datetime import UTC
 from hashlib import sha256
+from json import dumps
 from typing import Any
 from uuid import UUID
 
@@ -14,6 +16,17 @@ class InvalidIngressCredential(Exception):
 
 class IngressScopeMismatch(Exception):
     pass
+
+
+class IngestIdempotencyConflict(Exception):
+    pass
+
+
+def delivery_hash(payload: IngestInput) -> bytes:
+    content = payload.model_dump(mode="json", exclude={"tenant_id", "trace_id", "idempotency_key"})
+    content["received_at"] = payload.received_at.astimezone(UTC).isoformat()
+    canonical = dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(canonical.encode("ascii")).digest()
 
 
 def ingest(
@@ -33,6 +46,7 @@ def ingest(
     ):
         raise IngressScopeMismatch
 
+    request_hash = delivery_hash(payload)
     connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(tenant_id),))
     # Serialize retries before creating a case, including deliveries without a thread ID.
     connection.execute(
@@ -41,7 +55,7 @@ def ingest(
     )
     existing = connection.execute(
         """
-        SELECT m.case_id, m.id, m.trace_id, tp.enabled
+        SELECT m.case_id, m.id, m.trace_id, tp.enabled, m.request_hash
         FROM public.messages m
         JOIN public.cases c ON c.tenant_id = m.tenant_id AND c.id = m.case_id
         LEFT JOIN public.tenant_packs tp ON tp.tenant_id = c.tenant_id AND tp.id = c.tenant_pack_id
@@ -51,9 +65,11 @@ def ingest(
         (tenant_id, endpoint_id, payload.idempotency_key),
     ).fetchone()
     if existing is not None:
-        case_id, message_id, trace_id, enabled = existing
+        case_id, message_id, trace_id, enabled, previous_hash = existing
         if enabled is False:
             raise IngressScopeMismatch
+        if previous_hash != request_hash:
+            raise IngestIdempotencyConflict
         return IngestResult(
             trace_id=trace_id,
             tenant_id=tenant_id,
@@ -67,9 +83,9 @@ def ingest(
     message = connection.execute(
         """
         INSERT INTO public.messages (
-            tenant_id, case_id, endpoint_id, trace_id, idempotency_key, direction,
+            tenant_id, case_id, endpoint_id, trace_id, idempotency_key, request_hash, direction,
             channel, external_message_id, sender_address, subject, body_text, form_fields, received_at
-        ) VALUES (%s, %s, %s, %s, %s, 'inbound', %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, 'inbound', %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -78,6 +94,7 @@ def ingest(
             endpoint_id,
             payload.trace_id,
             payload.idempotency_key,
+            request_hash,
             payload.channel,
             payload.external_message_id,
             payload.sender.address,

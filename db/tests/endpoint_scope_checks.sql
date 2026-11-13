@@ -51,3 +51,7 @@ SELECT pg_temp.expect_error('message channel must match its case even without an
 SELECT pg_temp.expect_ok('outbound message can omit endpoint with the case channel',
   $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
      VALUES ('10000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000003',gen_random_uuid(),'outbound','outbound','email')$q$);
+
+SELECT pg_temp.expect_error('request hash must be SHA-256 sized when present',
+  $q$UPDATE messages SET request_hash=decode('00','hex')
+     WHERE id='92000000-0000-0000-0000-000000000002'$q$, 'messages_request_hash_size');

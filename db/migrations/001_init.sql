@@ -223,6 +223,7 @@ CREATE TABLE messages (
   endpoint_id         uuid,
   trace_id            uuid NOT NULL,
   idempotency_key     text NOT NULL,
+  request_hash        bytea CONSTRAINT messages_request_hash_size CHECK (octet_length(request_hash) = 32),
   direction           text NOT NULL CHECK (direction IN ('inbound','outbound')),
   channel             text NOT NULL CHECK (channel IN ('email','web_chat','web_form','api','whatsapp','slack')),
   external_message_id text,

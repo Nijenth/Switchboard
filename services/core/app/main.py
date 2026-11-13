@@ -13,7 +13,12 @@ from psycopg_pool import PoolTimeout, TooManyRequests
 from pydantic import BaseModel
 
 from app.adapters.db import Settings, create_pool
-from app.adapters.ingest import IngressScopeMismatch, InvalidIngressCredential, ingest
+from app.adapters.ingest import (
+    IngestIdempotencyConflict,
+    IngressScopeMismatch,
+    InvalidIngressCredential,
+    ingest,
+)
 from app.schemas.ingest import IngestInput, IngestResult
 
 
@@ -82,6 +87,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from None
         except IngressScopeMismatch:
             raise HTTPException(403, "Ingress scope mismatch") from None
+        except IngestIdempotencyConflict:
+            raise HTTPException(
+                409, "Idempotency key already used for a different request"
+            ) from None
         except DataError:
             raise HTTPException(422, "Invalid ingest data") from None
         except IntegrityError:

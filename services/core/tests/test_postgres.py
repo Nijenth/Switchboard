@@ -165,6 +165,22 @@ def test_ingest_deduplicates_and_records_one_audit_trail(
         assert events == [("case.created",), ("message.ingested",)]
 
 
+def test_ingest_rejects_changed_content_for_an_existing_key(
+    client: TestClient, credentials: dict[str, str]
+) -> None:
+    payload = make_payload(INVOICES)
+    headers = bearer(credentials[INVOICES])
+    first = client.post("/ingest", json=payload, headers=headers)
+    assert first.status_code == 200
+    retraced = {**payload, "trace_id": str(uuid4()), "tenant_id": str(NORTHWIND)}
+    retry = client.post("/ingest", json=retraced, headers=headers)
+    assert retry.status_code == 200
+    assert retry.json() == {**first.json(), "duplicate": True}
+    conflict = client.post("/ingest", json={**payload, "body_text": "Changed"}, headers=headers)
+    assert conflict.status_code == 409
+    assert client.post("/ingest", json=payload, headers=headers).json() == retry.json()
+
+
 def test_ingest_attaches_threads_and_scopes_duplicates_by_endpoint(
     client: TestClient, credentials: dict[str, str]
 ) -> None:
