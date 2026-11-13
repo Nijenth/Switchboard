@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "BANK_DETAIL_CHANGE",
+      "when": {
+        "field": "classification.intent_key",
+        "op": "eq",
+        "value": "bank_detail_change"
+      },
+      "then": {
+        "decision": "escalate",
+        "reason": "Handle bank detail change"
+      }
+    },
+    {
+      "id": "SUPPLIER_INVOICE",
+      "when": {
+        "field": "classification.intent_key",
+        "op": "eq",
+        "value": "supplier_invoice"
+      },
+      "then": {
+        "decision": "needs_approval",
+        "reason": "Handle supplier invoice"
+      }
+    }
+  ]
+}

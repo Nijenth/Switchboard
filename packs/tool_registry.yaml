@@ -1,0 +1,140 @@
+{
+  "tools": [
+    {
+      "key": "kb_search",
+      "name": "Knowledge search",
+      "description": "Semantic search over tenant + pack knowledge",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 5000
+    },
+    {
+      "key": "send_reply",
+      "name": "Send reply",
+      "description": "Send an approved/auto draft to the contact",
+      "risk_level": "external_comm",
+      "requires_verified_identity": false,
+      "timeout_ms": 15000
+    },
+    {
+      "key": "create_ticket",
+      "name": "Create ticket",
+      "description": "Create a ticket in the helpdesk / internal queue",
+      "risk_level": "write",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "notify_slack",
+      "name": "Notify Slack",
+      "description": "Post an internal notification to a queue channel",
+      "risk_level": "write",
+      "requires_verified_identity": false,
+      "timeout_ms": 5000
+    },
+    {
+      "key": "order_lookup",
+      "name": "Order lookup",
+      "description": "Fetch order status, items, shipping and tracking",
+      "risk_level": "read",
+      "requires_verified_identity": true,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "refund_eligibility_check",
+      "name": "Refund eligibility",
+      "description": "Check an order against the returns policy window and status",
+      "risk_level": "read",
+      "requires_verified_identity": true,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "refund_issue",
+      "name": "Issue refund",
+      "description": "Refund an order or line items to the original payment method",
+      "risk_level": "money",
+      "requires_verified_identity": true,
+      "timeout_ms": 20000
+    },
+    {
+      "key": "company_enrich",
+      "name": "Company enrichment",
+      "description": "Look up company size, industry and country from domain",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "crm_upsert_contact",
+      "name": "CRM upsert contact",
+      "description": "Create or update a CRM contact with lead score",
+      "risk_level": "write",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "crm_create_deal",
+      "name": "CRM create deal",
+      "description": "Create a deal for a qualified lead",
+      "risk_level": "write",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "calendar_find_slots",
+      "name": "Find meeting slots",
+      "description": "Find open slots on a sales rep's calendar",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "meeting_book",
+      "name": "Book meeting",
+      "description": "Book a meeting and send the invite",
+      "risk_level": "external_comm",
+      "requires_verified_identity": false,
+      "timeout_ms": 15000
+    },
+    {
+      "key": "vendor_lookup",
+      "name": "Vendor lookup",
+      "description": "Match a vendor by name, email domain or tax id",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "po_lookup",
+      "name": "PO lookup",
+      "description": "Fetch a purchase order and its lines",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "invoice_duplicate_check",
+      "name": "Duplicate invoice check",
+      "description": "Check if the vendor + invoice number or file hash already exists",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 10000
+    },
+    {
+      "key": "invoice_post_to_accounting",
+      "name": "Post bill to accounting",
+      "description": "Create a bill in the accounting system (not paid)",
+      "risk_level": "write",
+      "requires_verified_identity": false,
+      "timeout_ms": 20000
+    },
+    {
+      "key": "invoice_schedule_payment",
+      "name": "Schedule payment",
+      "description": "Schedule payment of a posted bill",
+      "risk_level": "money",
+      "requires_verified_identity": false,
+      "timeout_ms": 20000
+    }
+  ]
+}

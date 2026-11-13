@@ -1,0 +1,32 @@
+{
+  "tools": [
+    {
+      "key": "kb_search"
+    },
+    {
+      "key": "order_lookup"
+    },
+    {
+      "key": "refund_eligibility_check"
+    },
+    {
+      "key": "refund_issue",
+      "approval": {
+        "role": "manager",
+        "above_amount": 0
+      }
+    },
+    {
+      "key": "send_reply",
+      "approval": {
+        "role": "agent"
+      }
+    },
+    {
+      "key": "create_ticket"
+    },
+    {
+      "key": "notify_slack"
+    }
+  ]
+}

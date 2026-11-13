@@ -1,0 +1,32 @@
+{
+  "tools": [
+    {
+      "key": "vendor_lookup"
+    },
+    {
+      "key": "po_lookup"
+    },
+    {
+      "key": "invoice_duplicate_check"
+    },
+    {
+      "key": "invoice_post_to_accounting"
+    },
+    {
+      "key": "invoice_schedule_payment",
+      "approval": {
+        "role": "finance",
+        "above_amount": 0
+      }
+    },
+    {
+      "key": "send_reply",
+      "approval": {
+        "role": "finance"
+      }
+    },
+    {
+      "key": "notify_slack"
+    }
+  ]
+}
