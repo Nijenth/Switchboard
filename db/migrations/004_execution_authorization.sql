@@ -18,6 +18,7 @@ ALTER TABLE public.policy_decisions
   ADD CONSTRAINT policy_decisions_draft_binding CHECK ((draft_id IS NULL) = (draft_payload_hash IS NULL));
 
 REVOKE UPDATE ON public.policy_decisions, public.cases FROM app_core;
+REVOKE INSERT ON public.cases FROM app_core;
 GRANT UPDATE (tenant_pack_id, pack_id, contact_id, organization_id, channel, endpoint_id,
               external_thread_id, status, priority, queue_id, assigned_to, identity_verified,
               subject, summary, outcome, sla_due_at, last_activity_at, resolved_at)
@@ -26,7 +27,6 @@ GRANT INSERT (id, tenant_id, tenant_pack_id, pack_id, contact_id, organization_i
               endpoint_id, external_thread_id, status, priority, queue_id, assigned_to,
               identity_verified, subject, summary, outcome, sla_due_at, last_activity_at,
               resolved_at, created_at, updated_at) ON public.cases TO app_core;
-REVOKE INSERT ON public.cases FROM app_core;
 
 CREATE FUNCTION public.publish_policy_revision() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$

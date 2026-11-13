@@ -47,7 +47,8 @@ initdb --pgdata="$data_dir" --username=switchboard_bootstrap --auth=scram-sha-25
     --pwfile=<(printf '%s\n' "$SWITCHBOARD_DB_BOOTSTRAP_PASSWORD") --encoding=UTF8 --no-locale >/dev/null
 
 if [[ -n $listen_addresses ]]; then
-    printf 'host switchboard_test switchboard_core,switchboard_config_loader %s/32 scram-sha-256\n' \
+    # The owner connection is used only to prepare time-sensitive integration fixtures.
+    printf 'host switchboard_test switchboard_core,switchboard_config_loader,switchboard_owner %s/32 scram-sha-256\n' \
         "$SWITCHBOARD_CORE_TEST_GATEWAY" >> "$data_dir/pg_hba.conf"
 fi
 

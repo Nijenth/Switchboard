@@ -1,9 +1,12 @@
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from os import environ
+from queue import Queue
 from secrets import token_hex
+from threading import Barrier
+from time import monotonic, sleep
 from uuid import UUID, uuid4
 
 import psycopg
@@ -258,3 +261,167 @@ def test_core_pool_reuses_connection_after_commit_and_rollback(settings: Setting
         with pool.connection() as connection:
             assert connection.info.backend_pid == pid
             assert connection.execute("SELECT count(*) FROM public.cases").fetchone() == (0,)
+
+
+CASE_ID = UUID("92000000-0000-0000-0000-000000000001")
+FINANCE = UUID("20000000-0000-0000-0000-000000000003")
+
+
+def set_northwind(connection: Connection[tuple[object, ...]]) -> None:
+    verify_cluster(connection, "switchboard_core")
+    connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+
+
+def pending_request(connection: Connection[tuple[object, ...]]) -> UUID:
+    action_id, request_id = uuid4(), uuid4()
+    connection.execute(
+        """
+        INSERT INTO public.actions (id, tenant_id, case_id, trace_id, idempotency_key,
+                                    tool_key, risk_level, status)
+        VALUES (%s, %s, %s, %s, %s, 'invoice_schedule_payment', 'money', 'pending_approval')
+        """,
+        (action_id, NORTHWIND, CASE_ID, uuid4(), str(action_id)),
+    )
+    connection.execute(
+        """
+        INSERT INTO public.approval_requests (id, tenant_id, case_id, subject_type, subject_id, reason)
+        VALUES (%s, %s, %s, 'action', %s, 'Fixture approval')
+        """,
+        (request_id, NORTHWIND, CASE_ID, action_id),
+    )
+    return request_id
+
+
+def test_concurrent_reviewers_record_only_one_decision(settings: Settings) -> None:
+    with create_pool(settings, max_size=2) as pool:
+        with pool.connection() as connection, connection.transaction():
+            set_northwind(connection)
+            request_id = pending_request(connection)
+
+        ready = Barrier(2, timeout=3)
+
+        def decide() -> bool:
+            try:
+                with pool.connection() as connection, connection.transaction():
+                    set_northwind(connection)
+                    ready.wait()
+                    connection.execute(
+                        "SELECT public.record_approval_decision(%s, %s, 'approved', 'api')",
+                        (request_id, FINANCE),
+                    )
+            except psycopg.errors.RaiseException as error:
+                assert "already approved" in str(error)
+                return False
+            return True
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            assert sorted(workers.map(lambda _: decide(), range(2))) == [False, True]
+        with pool.connection() as connection, connection.transaction():
+            set_northwind(connection)
+            count = connection.execute(
+                "SELECT count(*) FROM public.approval_decisions WHERE request_id = %s",
+                (request_id,),
+            ).fetchone()
+            assert count == (1,)
+
+
+def test_approval_checks_sla_after_waiting_for_request_lock(settings: Settings) -> None:
+    with create_pool(settings, max_size=2) as pool:
+        with pool.connection() as connection, connection.transaction():
+            set_northwind(connection)
+            request_id = pending_request(connection)
+
+        with psycopg.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user="switchboard_owner",
+            password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+            connect_timeout=3,
+        ) as owner:
+            verify_cluster(owner, "switchboard_owner")
+            owner.execute(
+                "UPDATE public.approval_requests SET sla_due_at = clock_timestamp() + %s WHERE id = %s",
+                (timedelta(seconds=2), request_id),
+            )
+            owner.commit()
+
+        approver_pid: Queue[int] = Queue()
+
+        def approve() -> None:
+            with pool.connection() as connection, connection.transaction():
+                set_northwind(connection)
+                approver_pid.put(connection.info.backend_pid)
+                connection.execute(
+                    "SELECT public.record_approval_decision(%s, %s, 'approved', 'api')",
+                    (request_id, FINANCE),
+                )
+
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            with pool.connection() as connection, connection.transaction():
+                set_northwind(connection)
+                connection.execute(
+                    "UPDATE public.approval_requests SET slack_channel = 'fixture' WHERE id = %s",
+                    (request_id,),
+                )
+                approval = workers.submit(approve)
+                pid = approver_pid.get(timeout=1)
+                wait_until = monotonic() + 1.5
+                blocked = False
+                while monotonic() < wait_until:
+                    blocked = connection.execute(
+                        "SELECT pg_backend_pid() = ANY(pg_blocking_pids(%s))", (pid,)
+                    ).fetchone() == (True,)
+                    if blocked:
+                        break
+                    sleep(0.01)
+                assert blocked
+                connection.execute(
+                    """
+                    SELECT pg_sleep(greatest(0, extract(epoch FROM sla_due_at - clock_timestamp())) + 0.05)
+                    FROM public.approval_requests WHERE id = %s
+                    """,
+                    (request_id,),
+                )
+            with pytest.raises(psycopg.errors.RaiseException, match="past its SLA"):
+                approval.result(timeout=5)
+        with pool.connection() as connection, connection.transaction():
+            set_northwind(connection)
+            assert connection.execute(
+                "SELECT public.expire_approval_request(%s)", (request_id,)
+            ).fetchone() == (True,)
+
+
+def test_concurrent_workers_claim_one_action(settings: Settings) -> None:
+    action_id = uuid4()
+    with create_pool(settings, max_size=2) as pool:
+        with pool.connection() as connection, connection.transaction():
+            set_northwind(connection)
+            connection.execute(
+                """
+                INSERT INTO public.actions (id, tenant_id, case_id, trace_id, idempotency_key,
+                                            tool_key, risk_level, status)
+                VALUES (%s, %s, %s, %s, %s, 'po_lookup', 'read', 'proposed')
+                """,
+                (action_id, NORTHWIND, CASE_ID, uuid4(), str(action_id)),
+            )
+
+        ready = Barrier(2, timeout=3)
+
+        def claim(worker: int) -> bool:
+            with pool.connection() as connection, connection.transaction():
+                set_northwind(connection)
+                ready.wait()
+                row = connection.execute(
+                    """
+                    UPDATE public.actions SET status = 'executing', claimed_by = %s,
+                                              lease_expires_at = now() + interval '1 minute'
+                     WHERE tenant_id = %s AND id = %s AND status = 'proposed'
+                     RETURNING id
+                    """,
+                    (str(worker), NORTHWIND, action_id),
+                ).fetchone()
+                return row == (action_id,)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            assert sorted(workers.map(claim, range(2))) == [False, True]
