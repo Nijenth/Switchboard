@@ -9,8 +9,10 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from psycopg import DataError, Error, IntegrityError, OperationalError
+from psycopg.errors import InsufficientPrivilege, RaiseException
 from psycopg_pool import PoolTimeout, TooManyRequests
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.adapters.db import Settings, create_pool
 from app.adapters.ingest import (
@@ -18,6 +20,12 @@ from app.adapters.ingest import (
     IngressScopeMismatch,
     InvalidIngressCredential,
     ingest,
+)
+from app.adapters.slack import (
+    BUTTONS,
+    SlackAuthenticationError,
+    SlackPayloadError,
+    verify_interaction,
 )
 from app.schemas.ingest import IngestInput, IngestResult
 
@@ -99,5 +107,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, "Ingest unavailable") from None
         except Error:
             raise HTTPException(500, "Ingest failed") from None
+
+    @app.post("/approvals/slack")
+    async def slack_approval(request: Request) -> dict[str, UUID]:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 65_536:
+                raise HTTPException(413, "Slack request too large")
+        try:
+            event = verify_interaction(
+                config,
+                bytes(body),
+                request.headers.get("X-Slack-Request-Timestamp", ""),
+                request.headers.get("X-Slack-Signature", ""),
+            )
+        except SlackAuthenticationError:
+            raise HTTPException(401, "Invalid Slack signature or app") from None
+        except SlackPayloadError:
+            raise HTTPException(422, "Invalid Slack interaction") from None
+
+        def record() -> dict[str, UUID]:
+            button = event.actions[0]
+            try:
+                with pool.connection() as connection, connection.transaction():
+                    row = connection.execute(
+                        "SELECT decision_id, tenant_id FROM public.record_slack_approval(%s,%s,%s,%s,%s,%s)",
+                        (
+                            button.value,
+                            event.team.id,
+                            event.user.id,
+                            event.container.channel_id,
+                            event.container.message_ts,
+                            BUTTONS[button.action_id],
+                        ),
+                    ).fetchone()
+                    assert row is not None
+                    return {"decision_id": row[0], "tenant_id": row[1]}
+            except InsufficientPrivilege:
+                raise HTTPException(403, "Reviewer is not authorized") from None
+            except (DataError, IntegrityError, RaiseException):
+                raise HTTPException(409, "Approval could not be recorded") from None
+            except (OperationalError, PoolTimeout, TooManyRequests):
+                raise HTTPException(503, "Approval unavailable") from None
+
+        return await run_in_threadpool(record)
 
     return app

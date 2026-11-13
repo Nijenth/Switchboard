@@ -15,6 +15,8 @@ class Settings:
     db_name: str
     db_password: str = field(repr=False)
     health_token: str = field(repr=False)
+    slack_app_id: str | None = None
+    slack_signing_secret: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -24,6 +26,8 @@ class Settings:
             db_name=environ["SWITCHBOARD_DB_NAME"],
             db_password=environ["SWITCHBOARD_CORE_PASSWORD"],
             health_token=environ["SWITCHBOARD_HEALTH_TOKEN"],
+            slack_app_id=environ.get("SWITCHBOARD_SLACK_APP_ID"),
+            slack_signing_secret=environ.get("SWITCHBOARD_SLACK_SIGNING_SECRET"),
         )
 
     def __post_init__(self) -> None:

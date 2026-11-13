@@ -13,7 +13,8 @@ $passwordVars = @(
     'SWITCHBOARD_N8N_MOCK_PASSWORD', 'SWITCHBOARD_REPORTING_PASSWORD', 'SWITCHBOARD_HEALTH_TOKEN',
     'SWITCHBOARD_CORE_TEST_MARKER'
 )
-$testVars = $passwordVars + @('SWITCHBOARD_DB_HOST', 'SWITCHBOARD_DB_PORT', 'SWITCHBOARD_DB_NAME', 'SWITCHBOARD_CORE_TEST_GATEWAY')
+$testVars = $passwordVars + @('SWITCHBOARD_DB_HOST', 'SWITCHBOARD_DB_PORT', 'SWITCHBOARD_DB_NAME',
+    'SWITCHBOARD_CORE_TEST_GATEWAY', 'SWITCHBOARD_SLACK_APP_ID', 'SWITCHBOARD_SLACK_SIGNING_SECRET')
 $previous = @{}
 foreach ($name in $testVars) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 
@@ -25,6 +26,8 @@ try {
         try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
         [Environment]::SetEnvironmentVariable($name, [BitConverter]::ToString($bytes).Replace('-', ''))
     }
+    $env:SWITCHBOARD_SLACK_APP_ID = 'A000FIXTURE'
+    $env:SWITCHBOARD_SLACK_SIGNING_SECRET = [Guid]::NewGuid().ToString('N')
     $python = Join-Path $repo '.venv/Scripts/python.exe'
     if (-not (Test-Path -LiteralPath $python)) { throw 'Create the workspace Python 3.12 virtualenv first' }
 

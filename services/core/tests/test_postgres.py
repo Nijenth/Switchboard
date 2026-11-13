@@ -2,11 +2,14 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from hmac import digest
+from json import dumps
 from os import environ
 from queue import Queue
 from secrets import token_hex
 from threading import Barrier
-from time import monotonic, sleep
+from time import monotonic, sleep, time
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import psycopg
@@ -323,6 +326,84 @@ def test_concurrent_reviewers_record_only_one_decision(settings: Settings) -> No
                 (request_id,),
             ).fetchone()
             assert count == (1,)
+
+
+def test_slack_review_authenticates_signature_workspace_and_reviewer(
+    client: TestClient, settings: Settings
+) -> None:
+    workspace, user, channel, timestamp = "T000FIXTURE", "U000FIXTURE", "C000FIXTURE", "10.123456"
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_config_loader",
+        password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+        connect_timeout=3,
+    ) as loader:
+        verify_cluster(loader, "switchboard_config_loader")
+        loader.execute(
+            "UPDATE public.tenant_settings SET slack_workspace_id = %s WHERE tenant_id = %s",
+            (workspace, NORTHWIND),
+        )
+        loader.execute(
+            "UPDATE public.staff_users SET slack_user_id = %s WHERE tenant_id = %s AND id = %s",
+            (user, NORTHWIND, FINANCE),
+        )
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        set_northwind(conn)
+        request_id = pending_request(conn)
+        conn.execute(
+            "UPDATE public.approval_requests SET slack_channel = %s, slack_message_ts = %s WHERE id = %s",
+            (channel, timestamp, request_id),
+        )
+    secret = settings.slack_signing_secret
+    assert secret is not None
+
+    def interact(
+        team: str = workspace,
+        reviewer: str = user,
+        *,
+        forged: bool = False,
+        age: int = 0,
+        message_ts: str = timestamp,
+    ) -> tuple[int, object]:
+        payload = {
+            "type": "block_actions",
+            "api_app_id": settings.slack_app_id,
+            "team": {"id": team},
+            "user": {"id": reviewer},
+            "container": {"type": "message", "channel_id": channel, "message_ts": message_ts},
+            "actions": [
+                {"type": "button", "action_id": "switchboard_approve", "value": str(request_id)}
+            ],
+        }
+        body = urlencode({"payload": dumps(payload)}).encode()
+        stamp = str(int(time()) - age)
+        signature = digest(secret.encode(), b"v0:" + stamp.encode() + b":" + body, "sha256").hex()
+        response = client.post(
+            "/approvals/slack",
+            content=body,
+            headers={
+                "X-Slack-Request-Timestamp": stamp,
+                "X-Slack-Signature": "v0=" + ("0" * 64 if forged else signature),
+            },
+        )
+        return response.status_code, response.json()
+
+    assert interact(forged=True)[0] == 401
+    assert interact(age=301)[0] == 401
+    assert interact(reviewer="UUNKNOWN")[0] == 403
+    assert interact(team="TWRONG")[0] == 403
+    assert interact(message_ts="10.234567")[0] == 403
+    first = interact()
+    assert first[0] == 200
+    assert interact() == first
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        set_northwind(conn)
+        assert conn.execute(
+            "SELECT reviewer_id, channel FROM public.approval_decisions WHERE request_id = %s",
+            (request_id,),
+        ).fetchall() == [(FINANCE, "slack")]
 
 
 def test_pending_request_serializes_with_payload_update(settings: Settings) -> None:
