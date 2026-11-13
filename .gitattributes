@@ -1,0 +1,2 @@
+# Store and check out text as LF on every machine (Docker, CI, migration checksums)
+* text=auto eol=lf
