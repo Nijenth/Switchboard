@@ -29,6 +29,7 @@ def test_all_released_packs_validate() -> None:
         ("pack.yaml", "key_mismatch", "match its directory"),
         ("pack.yaml", "duplicate_intent", "duplicate key"),
         ("pack.yaml", "missing_prompt", "invalid or missing reference"),
+        ("pack.yaml", "readme_as_prompt", "invalid or missing reference"),
         ("pack.yaml", "bad_extraction", "unknown required extraction field"),
         ("tools.yaml", "unknown_tool", "unknown tool"),
         ("tools.yaml", "missing_approval", "requires approval"),
@@ -61,6 +62,8 @@ def test_catalog_refuses_invalid_fixture(
             data["intents"].append({**data["intents"][0], "description": "duplicate"})
         case "missing_prompt":
             data["prompts"]["classify"] = "prompts/missing.md"
+        case "readme_as_prompt":
+            data["prompts"]["classify"] = "prompts/../README.md"
         case "bad_extraction":
             data["extraction"]["required_fields"] = ["missing"]
         case "unknown_tool":
@@ -114,3 +117,16 @@ def test_loader_rejects_unknown_eval_tool(tmp_path: Path) -> None:
     path.write_text("\n".join(map(json.dumps, cases)), encoding="utf-8")
     with pytest.raises(PackError, match="unknown or conflicting eval tool"):
         read_catalog(root)
+
+
+def test_pack_checksum_excludes_only_top_level_readme(tmp_path: Path) -> None:
+    root = copytree(PACKS, tmp_path / "packs")
+    pack = root / "ecommerce_support"
+    _, published = read_catalog(root)
+    (pack / "README.md").write_text("# Updated demo instructions\n", encoding="utf-8")
+    _, docs_edit = read_catalog(root)
+    assert docs_edit[0].checksum == published[0].checksum
+
+    (pack / "prompts" / "classify.v1.md").write_text("# Updated prompt\n", encoding="utf-8")
+    _, prompt_edit = read_catalog(root)
+    assert prompt_edit[0].checksum != published[0].checksum

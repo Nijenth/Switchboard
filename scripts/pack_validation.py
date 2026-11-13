@@ -92,7 +92,7 @@ def reference(root: Path, name: str, folder: str, suffix: str) -> Path:
         "\\" in name
         or not name.startswith(folder + "/")
         or path.suffix != suffix
-        or not path.resolve().is_relative_to(root.resolve())
+        or not path.resolve().is_relative_to(root.resolve() / folder)
         or not path.is_file()
     ):
         raise PackError(f"{root.name}: invalid or missing reference {name}")
@@ -181,7 +181,7 @@ def pack_files(root: Path) -> list[tuple[str, str]]:
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise PackError(f"{root}: pack files cannot be symlinks")
-        if path.is_file():
+        if path.is_file() and path != root / "README.md":
             files.append(
                 (path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
             )
