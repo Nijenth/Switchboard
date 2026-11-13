@@ -33,6 +33,7 @@ ALTER TABLE channel_endpoints   ADD CONSTRAINT channel_endpoints_source_key     
 ALTER TABLE organizations       ADD CONSTRAINT organizations_tenant_id_key       UNIQUE (tenant_id, id);
 ALTER TABLE contacts            ADD CONSTRAINT contacts_tenant_id_key            UNIQUE (tenant_id, id);
 ALTER TABLE cases               ADD CONSTRAINT cases_tenant_id_key               UNIQUE (tenant_id, id);
+ALTER TABLE cases               ADD CONSTRAINT cases_tenant_channel_key          UNIQUE (tenant_id, id, channel);
 ALTER TABLE cases               ADD CONSTRAINT cases_source_key                  UNIQUE (tenant_id, id, channel, endpoint_id);
 ALTER TABLE cases               ADD CONSTRAINT cases_tenant_id_pack_key          UNIQUE (tenant_id, id, pack_id);
 ALTER TABLE messages            ADD CONSTRAINT messages_tenant_id_key            UNIQUE (tenant_id, id);
@@ -54,6 +55,7 @@ ALTER TABLE cases              ADD CONSTRAINT cases_queue_tenant_fk            F
 ALTER TABLE cases              ADD CONSTRAINT cases_assignee_tenant_fk         FOREIGN KEY (tenant_id, assigned_to)     REFERENCES staff_users (tenant_id, id);
 ALTER TABLE cases              ADD CONSTRAINT cases_endpoint_source_fk         FOREIGN KEY (tenant_id, channel, endpoint_id) REFERENCES channel_endpoints (tenant_id, channel, id);
 ALTER TABLE messages           ADD CONSTRAINT messages_case_tenant_fk          FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
+ALTER TABLE messages           ADD CONSTRAINT messages_case_channel_fk         FOREIGN KEY (tenant_id, case_id, channel) REFERENCES cases (tenant_id, id, channel);
 ALTER TABLE messages           ADD CONSTRAINT messages_case_source_fk          FOREIGN KEY (tenant_id, case_id, channel, endpoint_id) REFERENCES cases (tenant_id, id, channel, endpoint_id);
 ALTER TABLE documents          ADD CONSTRAINT documents_case_tenant_fk         FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
 ALTER TABLE documents          ADD CONSTRAINT documents_message_case_fk        FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);

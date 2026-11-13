@@ -1,7 +1,7 @@
 INSERT INTO cases (id, tenant_id, channel) VALUES
   ('92000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000001','email');
-INSERT INTO messages (id, tenant_id, case_id, trace_id, idempotency_key, direction, channel) VALUES
-  ('92000000-0000-0000-0000-000000000004','91000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004',gen_random_uuid(),'acme-scope','inbound','email');
+INSERT INTO messages (id, tenant_id, case_id, endpoint_id, trace_id, idempotency_key, direction, channel) VALUES
+  ('92000000-0000-0000-0000-000000000004','91000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004','91000000-0000-0000-0000-000000000005',gen_random_uuid(),'acme-scope','inbound','email');
 INSERT INTO documents (id, tenant_id, case_id, storage_bucket, storage_key, filename, mime_type, size_bytes, sha256) VALUES
   ('92000000-0000-0000-0000-000000000005','91000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004','test','scope','scope.pdf','application/pdf',0,repeat('0',64));
 INSERT INTO ai_runs (id, tenant_id, trace_id, step, provider, model, status) VALUES

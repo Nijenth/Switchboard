@@ -231,6 +231,7 @@ CREATE TABLE messages (
   processed_at        timestamptz,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT messages_inbound_requires_endpoint CHECK (direction <> 'inbound' OR endpoint_id IS NOT NULL),
   CONSTRAINT messages_source_idempotency_key UNIQUE NULLS NOT DISTINCT (tenant_id, endpoint_id, idempotency_key)
 );
 CREATE INDEX messages_case_idx    ON messages (case_id, received_at);

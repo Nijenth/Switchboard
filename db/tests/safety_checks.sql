@@ -21,13 +21,14 @@ SELECT pg_temp.expect_value('schema owner owns cases and lacks superuser, role c
 \echo
 \echo '== 1. Data integrity & tenant consistency =='
 SELECT pg_temp.expect_error('duplicate webhook is rejected (idempotency)',
-  $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
-     VALUES ('10000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001',gen_random_uuid(),'email:test-1','inbound','email')$q$,
+  $q$INSERT INTO messages (tenant_id, case_id, endpoint_id, trace_id, idempotency_key, direction, channel)
+     SELECT tenant_id, case_id, endpoint_id, gen_random_uuid(), idempotency_key, direction, channel
+       FROM messages WHERE id='92000000-0000-0000-0000-000000000002'$q$,
   'messages_source_idempotency_key');
 
 SELECT pg_temp.expect_error('message cannot point at another tenant''s case',
   $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
-     VALUES ('10000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004',gen_random_uuid(),'email:x','inbound','email')$q$,
+     VALUES ('10000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004',gen_random_uuid(),'email:x','outbound','email')$q$,
   'messages_case_tenant_fk');
 
 SELECT pg_temp.expect_error('intent must belong to the case''s pack',

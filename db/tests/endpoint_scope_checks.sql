@@ -30,3 +30,15 @@ SELECT pg_temp.expect_error('message endpoint must match its case',
   $q$INSERT INTO messages (tenant_id, case_id, endpoint_id, trace_id, idempotency_key, direction, channel)
      VALUES ('10000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000003','96000000-0000-0000-0000-000000000002',gen_random_uuid(),'wrong-endpoint','inbound','email')$q$,
   'messages_case_source_fk');
+
+SELECT pg_temp.expect_error('inbound message cannot omit endpoint to bypass deduplication',
+  $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
+     VALUES ('10000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000003',gen_random_uuid(),'endpoint-message','inbound','email')$q$,
+  'messages_inbound_requires_endpoint');
+SELECT pg_temp.expect_error('message channel must match its case even without an endpoint',
+  $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
+     VALUES ('10000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000003',gen_random_uuid(),'wrong-channel','outbound','web_form')$q$,
+  'messages_case_channel_fk');
+SELECT pg_temp.expect_ok('outbound message can omit endpoint with the case channel',
+  $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
+     VALUES ('10000000-0000-0000-0000-000000000001','96000000-0000-0000-0000-000000000003',gen_random_uuid(),'outbound','outbound','email')$q$);

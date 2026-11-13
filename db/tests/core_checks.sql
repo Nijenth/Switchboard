@@ -37,8 +37,8 @@ SELECT pg_temp.expect_value('Northwind context sees no Acme staff',
   $q$SELECT count(*)::text FROM staff_users WHERE tenant_id='91000000-0000-0000-0000-000000000001'$q$, '0');
 
 SELECT pg_temp.expect_error('cannot write a row for another tenant',
-  $q$INSERT INTO messages (tenant_id, case_id, trace_id, idempotency_key, direction, channel)
-     VALUES ('91000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004',gen_random_uuid(),'email:rls','inbound','email')$q$,
+  $q$INSERT INTO messages (tenant_id, case_id, endpoint_id, trace_id, idempotency_key, direction, channel)
+     VALUES ('91000000-0000-0000-0000-000000000001','91000000-0000-0000-0000-000000000004','91000000-0000-0000-0000-000000000005',gen_random_uuid(),'email:rls','inbound','email')$q$,
   'row-level security');
 
 SELECT pg_temp.expect_error('app cannot change which tools a pack may use',
