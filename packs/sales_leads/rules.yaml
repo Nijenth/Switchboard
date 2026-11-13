@@ -7,7 +7,7 @@ rules:
       value: spam_or_auto
     then:
       decision: ignore
-      reason: Handle spam or auto
+      reason: The message was classified as spam or an automated reply and requires no sales follow-up.
   - id: WHOLESALE_INQUIRY
     when:
       field: classification.intent_key
@@ -15,4 +15,4 @@ rules:
       value: wholesale_inquiry
     then:
       decision: needs_approval
-      reason: Handle wholesale inquiry
+      reason: Review the buyer’s requirements before quoting wholesale terms or promising availability.

@@ -7,7 +7,7 @@ rules:
       value: bank_detail_change
     then:
       decision: escalate
-      reason: Handle bank detail change
+      reason: Escalate supplier bank-detail changes for independent verification before changing payment instructions.
   - id: SUPPLIER_INVOICE
     when:
       field: classification.intent_key
@@ -15,4 +15,4 @@ rules:
       value: supplier_invoice
     then:
       decision: needs_approval
-      reason: Handle supplier invoice
+      reason: Check the supplier, invoice amount, and supporting purchase records before approving further processing.
