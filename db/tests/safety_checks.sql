@@ -45,6 +45,8 @@ SELECT pg_temp.expect_error('tenant pack must reference a matching pack key',
      VALUES ('91000000-0000-0000-0000-000000000001','sales_leads','30000000-0000-0000-0000-000000000001')$q$,
   'tenant_packs_pack_id_pack_key_fkey');
 
+\ir case_scope_checks.sql
+
 \echo
 \echo '== 2. Tool permissions =='
 SELECT pg_temp.expect_error('unregistered tool is rejected',

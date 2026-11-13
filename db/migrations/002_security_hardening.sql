@@ -32,9 +32,14 @@ ALTER TABLE channel_endpoints   ADD CONSTRAINT channel_endpoints_tenant_id_key  
 ALTER TABLE organizations       ADD CONSTRAINT organizations_tenant_id_key       UNIQUE (tenant_id, id);
 ALTER TABLE contacts            ADD CONSTRAINT contacts_tenant_id_key            UNIQUE (tenant_id, id);
 ALTER TABLE cases               ADD CONSTRAINT cases_tenant_id_key               UNIQUE (tenant_id, id);
+ALTER TABLE cases               ADD CONSTRAINT cases_tenant_id_pack_key          UNIQUE (tenant_id, id, pack_id);
 ALTER TABLE messages            ADD CONSTRAINT messages_tenant_id_key            UNIQUE (tenant_id, id);
+ALTER TABLE messages            ADD CONSTRAINT messages_tenant_case_id_key       UNIQUE (tenant_id, case_id, id);
 ALTER TABLE documents           ADD CONSTRAINT documents_tenant_id_key           UNIQUE (tenant_id, id);
+ALTER TABLE documents           ADD CONSTRAINT documents_tenant_case_id_key      UNIQUE (tenant_id, case_id, id);
+ALTER TABLE ai_runs             ADD CONSTRAINT ai_runs_tenant_id_key             UNIQUE (tenant_id, id);
 ALTER TABLE policy_decisions    ADD CONSTRAINT policy_decisions_tenant_id_key    UNIQUE (tenant_id, id);
+ALTER TABLE policy_decisions    ADD CONSTRAINT policy_decisions_tenant_case_id_key UNIQUE (tenant_id, case_id, id);
 ALTER TABLE approval_requests   ADD CONSTRAINT approval_requests_tenant_id_key   UNIQUE (tenant_id, id);
 ALTER TABLE knowledge_documents ADD CONSTRAINT knowledge_documents_tenant_id_key UNIQUE (tenant_id, id);
 
@@ -48,23 +53,62 @@ ALTER TABLE cases              ADD CONSTRAINT cases_assignee_tenant_fk         F
 ALTER TABLE cases              ADD CONSTRAINT cases_endpoint_tenant_fk         FOREIGN KEY (tenant_id, endpoint_id)     REFERENCES channel_endpoints (tenant_id, id);
 ALTER TABLE messages           ADD CONSTRAINT messages_case_tenant_fk          FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
 ALTER TABLE documents          ADD CONSTRAINT documents_case_tenant_fk         FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
-ALTER TABLE documents          ADD CONSTRAINT documents_message_tenant_fk      FOREIGN KEY (tenant_id, message_id)      REFERENCES messages (tenant_id, id);
+ALTER TABLE documents          ADD CONSTRAINT documents_message_case_fk        FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);
 ALTER TABLE ai_runs            ADD CONSTRAINT ai_runs_case_tenant_fk           FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
+ALTER TABLE ai_runs            ADD CONSTRAINT ai_runs_message_tenant_fk        FOREIGN KEY (tenant_id, message_id)      REFERENCES messages (tenant_id, id);
+ALTER TABLE ai_runs            ADD CONSTRAINT ai_runs_document_tenant_fk       FOREIGN KEY (tenant_id, document_id)     REFERENCES documents (tenant_id, id);
 ALTER TABLE classifications    ADD CONSTRAINT classifications_case_tenant_fk   FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
-ALTER TABLE classifications    ADD CONSTRAINT classifications_msg_tenant_fk    FOREIGN KEY (tenant_id, message_id)      REFERENCES messages (tenant_id, id);
+ALTER TABLE classifications    ADD CONSTRAINT classifications_case_pack_fk     FOREIGN KEY (tenant_id, case_id, pack_id) REFERENCES cases (tenant_id, id, pack_id);
+ALTER TABLE classifications    ADD CONSTRAINT classifications_msg_case_fk      FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);
+ALTER TABLE classifications    ADD CONSTRAINT classifications_ai_run_tenant_fk FOREIGN KEY (tenant_id, ai_run_id)       REFERENCES ai_runs (tenant_id, id);
 ALTER TABLE extractions        ADD CONSTRAINT extractions_case_tenant_fk       FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
-ALTER TABLE extractions        ADD CONSTRAINT extractions_doc_tenant_fk        FOREIGN KEY (tenant_id, document_id)     REFERENCES documents (tenant_id, id);
+ALTER TABLE extractions        ADD CONSTRAINT extractions_case_pack_fk         FOREIGN KEY (tenant_id, case_id, pack_id) REFERENCES cases (tenant_id, id, pack_id);
+ALTER TABLE extractions        ADD CONSTRAINT extractions_msg_case_fk          FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);
+ALTER TABLE extractions        ADD CONSTRAINT extractions_doc_case_fk          FOREIGN KEY (tenant_id, case_id, document_id) REFERENCES documents (tenant_id, case_id, id);
+ALTER TABLE extractions        ADD CONSTRAINT extractions_ai_run_tenant_fk     FOREIGN KEY (tenant_id, ai_run_id)       REFERENCES ai_runs (tenant_id, id);
 ALTER TABLE extractions        ADD CONSTRAINT extractions_corrector_tenant_fk  FOREIGN KEY (tenant_id, corrected_by)    REFERENCES staff_users (tenant_id, id);
 ALTER TABLE knowledge_chunks   ADD CONSTRAINT knowledge_chunks_doc_tenant_fk   FOREIGN KEY (tenant_id, document_id)     REFERENCES knowledge_documents (tenant_id, id);
 ALTER TABLE policy_decisions   ADD CONSTRAINT policy_decisions_case_tenant_fk  FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
+ALTER TABLE policy_decisions   ADD CONSTRAINT policy_decisions_case_pack_fk    FOREIGN KEY (tenant_id, case_id, pack_id) REFERENCES cases (tenant_id, id, pack_id);
+ALTER TABLE policy_decisions   ADD CONSTRAINT policy_decisions_msg_case_fk     FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);
 ALTER TABLE drafts             ADD CONSTRAINT drafts_case_tenant_fk            FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
-ALTER TABLE drafts             ADD CONSTRAINT drafts_msg_tenant_fk             FOREIGN KEY (tenant_id, in_reply_to_message_id) REFERENCES messages (tenant_id, id);
+ALTER TABLE drafts             ADD CONSTRAINT drafts_msg_case_fk               FOREIGN KEY (tenant_id, case_id, in_reply_to_message_id) REFERENCES messages (tenant_id, case_id, id);
+ALTER TABLE drafts             ADD CONSTRAINT drafts_sent_msg_case_fk          FOREIGN KEY (tenant_id, case_id, sent_message_id) REFERENCES messages (tenant_id, case_id, id);
+ALTER TABLE drafts             ADD CONSTRAINT drafts_decision_case_fk          FOREIGN KEY (tenant_id, case_id, policy_decision_id) REFERENCES policy_decisions (tenant_id, case_id, id);
+ALTER TABLE drafts             ADD CONSTRAINT drafts_ai_run_tenant_fk          FOREIGN KEY (tenant_id, ai_run_id)       REFERENCES ai_runs (tenant_id, id);
 ALTER TABLE actions            ADD CONSTRAINT actions_case_tenant_fk           FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
-ALTER TABLE actions            ADD CONSTRAINT actions_decision_tenant_fk       FOREIGN KEY (tenant_id, policy_decision_id) REFERENCES policy_decisions (tenant_id, id);
+ALTER TABLE actions            ADD CONSTRAINT actions_msg_case_fk              FOREIGN KEY (tenant_id, case_id, message_id) REFERENCES messages (tenant_id, case_id, id);
+ALTER TABLE actions            ADD CONSTRAINT actions_decision_case_fk         FOREIGN KEY (tenant_id, case_id, policy_decision_id) REFERENCES policy_decisions (tenant_id, case_id, id);
 ALTER TABLE actions            ADD CONSTRAINT actions_approver_tenant_fk       FOREIGN KEY (tenant_id, approved_by)     REFERENCES staff_users (tenant_id, id);
 ALTER TABLE approval_requests  ADD CONSTRAINT approval_requests_case_tenant_fk FOREIGN KEY (tenant_id, case_id)         REFERENCES cases (tenant_id, id);
 ALTER TABLE approval_decisions ADD CONSTRAINT approval_decisions_req_tenant_fk FOREIGN KEY (tenant_id, request_id)      REFERENCES approval_requests (tenant_id, id);
 ALTER TABLE approval_decisions ADD CONSTRAINT approval_decisions_rev_tenant_fk FOREIGN KEY (tenant_id, reviewer_id)     REFERENCES staff_users (tenant_id, id);
+ALTER TABLE dead_letters       ADD CONSTRAINT dead_letters_resolver_tenant_fk  FOREIGN KEY (tenant_id, resolved_by)     REFERENCES staff_users (tenant_id, id),
+                               ADD CONSTRAINT dead_letters_resolver_requires_tenant CHECK (resolved_by IS NULL OR tenant_id IS NOT NULL);
+
+CREATE FUNCTION enforce_case_pack_pin() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.tenant_pack_id IS NOT NULL THEN
+    IF (NEW.tenant_id, NEW.tenant_pack_id, NEW.pack_id) IS DISTINCT FROM
+       (OLD.tenant_id, OLD.tenant_pack_id, OLD.pack_id) THEN
+      RAISE EXCEPTION 'case pack is already pinned';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.tenant_pack_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.tenant_packs tp
+     WHERE tp.tenant_id = NEW.tenant_id AND tp.id = NEW.tenant_pack_id
+       AND tp.pack_id = NEW.pack_id AND tp.enabled
+  ) THEN
+    RAISE EXCEPTION 'case requires an enabled tenant pack matching the pinned version';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER cases_enforce_pack_pin BEFORE INSERT OR UPDATE OF tenant_id, tenant_pack_id, pack_id ON cases
+  FOR EACH ROW EXECUTE FUNCTION enforce_case_pack_pin();
 
 -- =====================================================================
 -- D + E. ACTIONS: payload hash, frozen payloads, state machine, approval binding
