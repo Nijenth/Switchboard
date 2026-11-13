@@ -1,0 +1,6 @@
+services:
+  db-check:
+    network_mode: bridge
+    environment:
+      SWITCHBOARD_CORE_TEST_MARKER: ${SWITCHBOARD_CORE_TEST_MARKER:-}
+      SWITCHBOARD_CORE_TEST_GATEWAY: ${SWITCHBOARD_CORE_TEST_GATEWAY:-}

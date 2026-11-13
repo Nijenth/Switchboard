@@ -23,3 +23,9 @@ For each private `/ingest` caller, generate a separate 32-byte random token enco
 Send the token in `Authorization: Bearer …` with the canonical JSON body. The credential determines the tenant and endpoint. A successful retry returns the original case, message, and trace IDs with `duplicate: true`. The Stage 1 API accepts text and form fields. It rejects nonempty attachments until document storage is implemented. The case-level pack pin remains stable across pack upgrades. Disabling the enrollment stops ingress and new routing to it.
 
 Migration tracking with checksums is required before applying the migrations to a persistent database.
+
+### Run the core integration tests
+
+Create a repository-root `.venv` with Python 3.12 and install `services/core/requirements-dev.txt` into it. With Docker Desktop running and the pgvector image from the SQL suite available locally, run `./scripts/test_core.ps1` from PowerShell.
+
+The script provisions a fresh PostgreSQL cluster with generated credentials. It publishes a temporary port on `127.0.0.1` and checks the cluster's randomly generated marker before tests write fixtures or send requests. The test app runs in process. The script removes its container and anonymous volumes on exit. A startup error stops the run before pytest, and a pytest failure makes the script exit nonzero.

@@ -3,6 +3,26 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/db_common.sh
 
+listen_addresses=''
+cluster_options=''
+case "${1:-}" in
+    '') ;;
+    --core-integration)
+        : "${SWITCHBOARD_CORE_TEST_MARKER:?Missing integration cluster marker}"
+        if [[ ! $SWITCHBOARD_CORE_TEST_MARKER =~ ^[A-Fa-f0-9]{64}$ ]]; then
+            printf 'Invalid integration cluster marker\n' >&2
+            exit 1
+        fi
+        if [[ ! ${SWITCHBOARD_CORE_TEST_GATEWAY:-} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            printf 'Invalid integration bridge gateway\n' >&2
+            exit 1
+        fi
+        listen_addresses='*'
+        cluster_options="-c switchboard.integration_marker=$SWITCHBOARD_CORE_TEST_MARKER"
+        ;;
+    *) printf 'Unknown database check mode\n' >&2; exit 1 ;;
+esac
+
 : "${SWITCHBOARD_DB_BOOTSTRAP_PASSWORD:?Missing bootstrap password}"
 : "${SWITCHBOARD_DB_OWNER_PASSWORD:?Missing owner password}"
 : "${SWITCHBOARD_CORE_PASSWORD:?Missing core password}"
@@ -26,19 +46,34 @@ printf 'Initializing disposable PostgreSQL cluster\n'
 initdb --pgdata="$data_dir" --username=switchboard_bootstrap --auth=scram-sha-256 \
     --pwfile=<(printf '%s\n' "$SWITCHBOARD_DB_BOOTSTRAP_PASSWORD") --encoding=UTF8 --no-locale >/dev/null
 
+if [[ -n $listen_addresses ]]; then
+    printf 'host switchboard_test switchboard_core,switchboard_config_loader %s/32 scram-sha-256\n' \
+        "$SWITCHBOARD_CORE_TEST_GATEWAY" >> "$data_dir/pg_hba.conf"
+fi
+
 stop_db() {
     if [[ -f "$data_dir/postmaster.pid" ]]; then
         pg_ctl --pgdata="$data_dir" --mode=fast --wait stop >/dev/null
     fi
 }
 trap stop_db EXIT
+trap 'exit 0' TERM INT
 pg_ctl --pgdata="$data_dir" --log="$check_dir/postgres.log" --wait \
-    --options="-c listen_addresses='' -c unix_socket_directories=$SWITCHBOARD_DB_SOCKET -c unix_socket_permissions=0700 -p 5432" \
+    --options="-c listen_addresses='$listen_addresses' -c unix_socket_directories=$SWITCHBOARD_DB_SOCKET -c unix_socket_permissions=0700 -p 5432 $cluster_options" \
     start
 
 bash scripts/create_db_users
 bash scripts/migrate
 bash scripts/seed
+
+if [[ -n $listen_addresses ]]; then
+    db_psql --single-transaction --file=db/tests/check_fixtures.sql
+    printf 'Core integration database ready\n'
+    sleep infinity &
+    wait "$!"
+    exit 0
+fi
+
 printf 'Running database safety checks\n'
 db_psql --file=db/tests/safety_checks.sql
 
