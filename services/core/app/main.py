@@ -63,7 +63,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(audit_router(pool, config.audit_token, bearer_token))
     app.include_router(
         understand_router(
-            pool, config.understand_credentials, config.offline_gateway_url, bearer_token
+            pool,
+            config.understand_credentials,
+            config.offline_gateway_url,
+            config.understand_primary,
+            bearer_token,
         )
     )
 

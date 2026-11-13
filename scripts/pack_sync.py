@@ -85,7 +85,12 @@ def publish(conn: psycopg.Connection[Any], pack: Pack) -> None:
             Jsonb({**config, "rules": pack.rules, "tools": pack.tools, "assets": pack.assets}),
         ),
     )
-    for intent in config["intents"]:
+    system_intent = {
+        "key": "system_escalation",
+        "description": "Local guardrail escalated before model classification",
+        "default_priority": "urgent",
+    }
+    for intent in [*config["intents"], system_intent]:
         conn.execute(
             """INSERT INTO public.pack_intents (pack_id,intent_key,description,default_priority)
                VALUES (%s,%s,%s,%s)""",

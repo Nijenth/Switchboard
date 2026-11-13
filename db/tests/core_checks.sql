@@ -9,6 +9,11 @@ SELECT pg_temp.expect_value('core cannot assume the owner or bootstrap role',
 
 SELECT pg_temp.expect_value('no tenant context → sees zero cases (fail closed)',
   $q$SELECT count(*)::text FROM cases$q$, '0');
+SELECT pg_temp.expect_error('understand claim requires tenant context',
+  $q$INSERT INTO understand_requests (tenant_id,case_id,message_id,pack_id,rerun_key)
+      VALUES ('10000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001',
+              '92000000-0000-0000-0000-000000000002','30000000-0000-0000-0000-000000000003',
+              gen_random_uuid())$q$, 'row-level security');
 
 SELECT pg_temp.expect_value('ingest can resolve tenant from its credential without context',
   $q$SELECT tenant_id::text FROM resolve_channel_endpoint(sha256(convert_to('invoice-fixture','UTF8')))$q$,
@@ -37,6 +42,11 @@ SELECT pg_temp.expect_value('privileged functions use a trusted search path',
         AND 'search_path=pg_catalog, public, pg_temp' = ANY(proconfig)$q$, '2');
 
 SELECT set_config('app.tenant_id', '10000000-0000-0000-0000-000000000001', true) \g /dev/null
+SELECT pg_temp.expect_error('understand claim requires the pinned case pack',
+  $q$INSERT INTO understand_requests (tenant_id,case_id,message_id,pack_id,rerun_key)
+      VALUES ('10000000-0000-0000-0000-000000000001','92000000-0000-0000-0000-000000000001',
+              '92000000-0000-0000-0000-000000000002','30000000-0000-0000-0000-000000000001',
+              gen_random_uuid())$q$, 'foreign key constraint');
 SELECT pg_temp.expect_value('Northwind context cannot see Acme''s case',
   $q$SELECT count(*)::text FROM cases WHERE id='91000000-0000-0000-0000-000000000004'$q$, '0');
 SELECT pg_temp.expect_value('Northwind context sees its own case',

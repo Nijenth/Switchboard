@@ -195,6 +195,8 @@ def read_pack(root: Path, registry: dict[str, dict[str, Any]]) -> Pack:
     if config["key"] != root.name:
         raise PackError(f"{root}: pack key must match its directory")
     intents = set(unique(config["intents"], "key", str(root / "pack.yaml")))
+    if "system_escalation" in intents:
+        raise PackError(f"{root}: system_escalation is a reserved intent")
     tools = read_yaml(root / "tools.yaml", "tools")["tools"]
     selected = unique(tools, "key", str(root / "tools.yaml"))
     fields = set(FIELDS)

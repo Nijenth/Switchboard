@@ -10,16 +10,19 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from app.adapters.ai import OfflineGateway
+from app.adapters.ai import OfflineGateway, Provider
 from app.adapters.ingest import audit
 from app.ai_accounting import Accounting, set_scope
 from app.understanding import understand
+
+DEFAULT_RERUN_KEY = UUID(int=0)
 
 
 class UnderstandInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case_id: UUID
     message_id: UUID
+    rerun_key: UUID | None = None
 
 
 class Credential(BaseModel):
@@ -32,6 +35,7 @@ def understand_router(
     pool: ConnectionPool[Connection],
     config: str | None,
     base: str | None,
+    primary: Provider,
     bearer_token: Callable[[str | None], str],
 ) -> APIRouter:
     router = APIRouter()
@@ -53,8 +57,9 @@ def understand_router(
         )
         if tenant is None:
             raise HTTPException(403, "Understand credential is not authorized")
-        if gateway is None:
-            raise HTTPException(503, "Offline gateway unavailable")
+        if payload.rerun_key == DEFAULT_RERUN_KEY:
+            raise HTTPException(422, "Rerun key must be a nonzero UUID")
+        rerun_key = payload.rerun_key or DEFAULT_RERUN_KEY
         try:
             with pool.connection() as conn, conn.transaction():
                 set_scope(conn, tenant)
@@ -69,28 +74,91 @@ def understand_router(
                     """,
                     (tenant, payload.case_id, payload.message_id),
                 ).fetchone()
-            if row is None:
-                raise HTTPException(404, "Message unavailable")
-            trace, redacted, pack, pack_id = row
-            if redacted is None or pack is None:
-                return {
-                    "trace_id": trace,
-                    "decision": "needs_approval",
-                    "reason": "input_unavailable",
-                }
+                if row is None:
+                    raise HTTPException(404, "Message unavailable")
+                trace, redacted, pack, pack_id = row
+                if redacted is None or pack is None:
+                    return {
+                        "trace_id": trace,
+                        "decision": "needs_approval",
+                        "reason": "input_unavailable",
+                    }
+                request_key = (tenant, payload.message_id, pack_id, rerun_key)
+                cached = conn.execute(
+                    """
+                    SELECT result FROM public.understand_requests
+                    WHERE tenant_id=%s AND message_id=%s AND pack_id=%s AND rerun_key=%s
+                    """,
+                    request_key,
+                ).fetchone()
+                if cached is not None:
+                    if cached[0] is None:
+                        raise HTTPException(409, "Understanding already claimed")
+                    result_json: dict[str, Any] = cached[0]
+                    return result_json
+                if gateway is None:
+                    raise HTTPException(503, "Offline gateway unavailable")
+                claimed = conn.execute(
+                    """
+                    INSERT INTO public.understand_requests
+                        (tenant_id,message_id,pack_id,rerun_key,case_id)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT DO NOTHING RETURNING rerun_key
+                    """,
+                    (*request_key, payload.case_id),
+                ).fetchone()
+                if claimed is None:
+                    cached = conn.execute(
+                        """
+                        SELECT result FROM public.understand_requests
+                        WHERE tenant_id=%s AND message_id=%s AND pack_id=%s AND rerun_key=%s
+                        """,
+                        request_key,
+                    ).fetchone()
+                    if cached is None or cached[0] is None:
+                        raise HTTPException(409, "Understanding already claimed")
+                    replay: dict[str, Any] = cached[0]
+                    return replay
             accounting = Accounting(
                 pool,
                 gateway,
                 tenant,
                 trace,
                 redacted,
-                "openai",
+                primary,
                 payload.case_id,
                 payload.message_id,
             )
-            result = understand(pack, redacted, "openai", accounting.attempt)
+            result = understand(pack, redacted, primary, accounting.attempt)
+            response = {
+                "trace_id": str(trace),
+                "decision": result.decision,
+                "reason": "budget_blocked" if accounting.blocked else result.reason,
+                "intent": result.intent,
+                "confidence": result.confidence,
+                "language": result.language,
+                "extraction": result.extraction,
+                "field_confidence": result.field_confidence,
+            }
             with pool.connection() as conn, conn.transaction():
                 set_scope(conn, tenant)
+                if result.decision == "escalate":
+                    conn.execute(
+                        """
+                        INSERT INTO public.classifications
+                            (tenant_id,case_id,message_id,pack_id,intent_key,
+                             method,priority,language,confidence,flags)
+                        VALUES (%s,%s,%s,%s,'system_escalation','rules','urgent',%s,1,%s)
+                        """,
+                        (
+                            tenant,
+                            payload.case_id,
+                            payload.message_id,
+                            pack_id,
+                            result.language,
+                            [result.reason],
+                        ),
+                    )
                 if result.intent is not None:
                     priority = next(
                         intent["default_priority"]
@@ -143,16 +211,14 @@ def understand_router(
                             ),
                         )
                 audit(conn, tenant, trace, "message.understood", "message", payload.message_id)
-            return {
-                "trace_id": trace,
-                "decision": result.decision,
-                "reason": "budget_blocked" if accounting.blocked else result.reason,
-                "intent": result.intent,
-                "confidence": result.confidence,
-                "language": result.language,
-                "extraction": result.extraction,
-                "field_confidence": result.field_confidence,
-            }
+                conn.execute(
+                    """
+                    UPDATE public.understand_requests SET result=%s
+                    WHERE tenant_id=%s AND message_id=%s AND pack_id=%s AND rerun_key=%s
+                    """,
+                    (Jsonb(response), *request_key),
+                )
+            return response
         except (Error, PoolTimeout, TooManyRequests):
             raise HTTPException(503, "Understand unavailable") from None
 

@@ -5,6 +5,8 @@ from psycopg import Connection
 from psycopg.conninfo import make_conninfo
 from psycopg_pool import ConnectionPool
 
+from app.adapters.ai import Provider
+
 CORE_DB_USER = "switchboard_core"
 
 
@@ -21,9 +23,13 @@ class Settings:
     audit_token: str | None = field(default=None, repr=False)
     understand_credentials: str | None = field(default=None, repr=False)
     offline_gateway_url: str | None = None
+    understand_primary: Provider = "openai"
 
     @classmethod
     def from_environment(cls) -> "Settings":
+        primary = environ.get("SWITCHBOARD_UNDERSTAND_PRIMARY", "openai")
+        if primary != "openai" and primary != "anthropic":
+            raise ValueError("Invalid understand primary provider")
         return cls(
             db_host=environ["SWITCHBOARD_DB_HOST"],
             db_port=int(environ.get("SWITCHBOARD_DB_PORT", "5432")),
@@ -36,6 +42,7 @@ class Settings:
             audit_token=environ.get("SWITCHBOARD_AUDIT_TOKEN"),
             understand_credentials=environ.get("SWITCHBOARD_UNDERSTAND_CREDENTIALS"),
             offline_gateway_url=environ.get("SWITCHBOARD_OFFLINE_GATEWAY_URL"),
+            understand_primary="openai" if primary == "openai" else "anthropic",
         )
 
     def __post_init__(self) -> None:
