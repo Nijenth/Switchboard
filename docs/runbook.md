@@ -13,9 +13,28 @@ The gate evaluates the understanding result, which remains approval-only or esca
 the decision pipeline is implemented. Rerun the safety gate against that pipeline before
 enabling automatic decisions.
 
+`/understand` defaults to the primary named by `SWITCHBOARD_UNDERSTAND_PRIMARY`. Retry a
+completed message using the original request body to replay the result. To explicitly run it
+again, provide a fresh `rerun_key` UUID and reuse that key on retries. HTTP 409 means a claim
+has no completed result. Check its `ai_runs` entries before authorizing a rerun of an interrupted
+claim. An ambiguous model charge remains reserved for budget admission.
+
 Keep the provider keys empty for this run. Future live configuration reads `OPENAI_API_KEY`
 and `ANTHROPIC_API_KEY` from local `.env` after model and spending approval. Langfuse stays
 disabled. See ADR 0011.
+
+### Before the first live synthetic eval
+
+- Confirm the selected model IDs, provider keys, and provider-side spending caps. Verify input
+  and output prices, token bounds after LiteLLM translation, output limits, and conservative
+  reservation accounting for timeouts, missing costs, and fallback. Offline fixture prices
+  apply only to the fake gateway.
+- Inspect a sanitized capture of the translated Haiku 5.5 request. Confirm native structured
+  output, low effort, and no temperature parameter. Exercise schema rejection and fallback.
+- Inspect the translated GPT-6 Luna request. Confirm reasoning is disabled, temperature
+  is at most 0.2, and the selected endpoint accepts the schema and output-token limit.
+- Use synthetic cases only. Run each twice, report agreement, and keep Langfuse disabled.
+  Real customer data requires the stronger redactor and its independent recall check.
 
 Before real customer data, add a local multilingual PII detector with person-name recognition
 and locale-specific address parsing. Combine it with the existing pattern and known-contact

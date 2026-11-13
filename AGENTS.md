@@ -407,7 +407,9 @@ read-only to `app_core`. They change only through Git → CI → `load_packs`.
   model writes can grant a tool, change a threshold or skip an approval.
 - Use a cheap, fast model for routing, classification and extraction of short text. Use a stronger model
   for drafting and document extraction. Set this in LiteLLM config, not in code.
-- Temperature ≤ 0.2 for classification and extraction.
+- For classification and extraction, use temperature ≤ 0.2 where the provider supports it.
+  Otherwise rely on structured output, low reasoning effort, and eval-measured consistency.
+  Run each eval case twice and report agreement.
 
 ### Audit
 - Every meaningful state change writes `audit_log` (append-only, enforced by DB trigger).
