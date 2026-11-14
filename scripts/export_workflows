@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Preview or export sanitized Switchboard editor workflows."""
+
+import argparse
+import json
+import re
+import subprocess
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+SENSITIVE = re.compile(
+    r"credential|secret|password|token|authorization|pindata|staticdata", re.IGNORECASE
+)
+INLINE_AUTH = re.compile(r"bearer\s+[^\s]+|\$env\b", re.IGNORECASE)
+ERROR_WORKFLOW = "SwitchboardError1"
+
+
+def sanitize(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: sanitize(item) for key, item in value.items() if not SENSITIVE.search(key)}
+    if isinstance(value, list):
+        return [sanitize(item) for item in value]
+    if isinstance(value, str) and INLINE_AUTH.search(value):
+        raise ValueError("Export contains an inline authorization value or environment access")
+    return value
+
+
+def export(raw: str) -> list[dict[str, Any]]:
+    workflows = []
+    existing = {
+        data["id"]: data
+        for file in (ROOT / "workflows").glob("*.json")
+        if (data := json.loads(file.read_text(encoding="utf-8")))
+    }
+    for workflow in json.loads(raw):
+        if workflow.get("id") not in existing:
+            continue
+        source = existing[workflow["id"]]
+        nodes = sanitize(workflow["nodes"])
+        # Keep repository-defined placeholder bindings, never editor credential IDs or values.
+        placeholders = {node["id"]: node.get("credentials") for node in source["nodes"]}
+        for node in nodes:
+            if node["type"] == "n8n-nodes-base.httpRequest":
+                params = node["parameters"]
+                if params.get("sendHeaders"):
+                    raise ValueError("HTTP workflow headers must use a credential")
+            if binding := placeholders.get(node["id"]):
+                node["credentials"] = binding
+        settings = sanitize(workflow.get("settings", {}))
+        settings.update(
+            saveDataErrorExecution="none",
+            saveDataSuccessExecution="none",
+            saveManualExecutions=False,
+            saveExecutionProgress=False,
+        )
+        # Every workflow reports to the global error handler, except the handler itself.
+        if source["id"] == ERROR_WORKFLOW:
+            settings.pop("errorWorkflow", None)
+        else:
+            settings["errorWorkflow"] = ERROR_WORKFLOW
+        workflows.append(
+            {
+                "id": source["id"],
+                "name": source["name"],
+                "active": False,
+                "nodes": nodes,
+                "connections": sanitize(workflow["connections"]),
+                "settings": settings,
+                "pinData": {},
+            }
+        )
+    if len(workflows) != len(existing):
+        raise ValueError("Editor is missing repository workflows. Refresh it before exporting.")
+    return workflows
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--write", action="store_true")
+    args = parser.parse_args()
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-p",
+            "switchboard-editor",
+            "-f",
+            "docker-compose.n8n-dev.yml",
+            "exec",
+            "-T",
+            "n8n-editor",
+            "n8n",
+            "export:workflow",
+            "--all",
+            "--output=/dev/stdout",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode:
+        raise SystemExit("n8n export failed. Check that the local editor is running.")
+    start = result.stdout.find('[{"')
+    if start == -1:
+        start = result.stdout.find("[\n")
+    try:
+        raw, _ = json.JSONDecoder().raw_decode(result.stdout[start:])
+        rows = export(json.dumps(raw))
+    except json.JSONDecodeError:
+        raise SystemExit("n8n did not return a JSON export") from None
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    except (KeyError, TypeError):
+        raise SystemExit("Could not sanitize the workflow export format") from None
+    for workflow in rows:
+        path = ROOT / "workflows" / f"{workflow['name']}.json"
+        content = json.dumps(workflow, indent=2, ensure_ascii=False) + "\n"
+        if path.read_text(encoding="utf-8") != content:
+            if args.write:
+                path.write_text(content, encoding="utf-8", newline="\n")
+            print(f"{'Updated' if args.write else 'Would update'} {path.name}")
+    print(f"Checked {len(rows)} workflow exports")
+
+
+if __name__ == "__main__":
+    main()

@@ -9,9 +9,24 @@ It imports no credentials. Keep Gmail and schedules inactive while inspecting th
 
 HTTP nodes use named Header Auth credentials with header name `Authorization` and a bearer
 value scoped to the node's endpoint. The mock PostgreSQL nodes use the separate mock login.
-Adjust the visible fixture URLs in a local copy for your running core, Slack fixture, and
-checkpoint service. Keep node environment access blocked. The disposable harness binds
+Edit the core base URL in `wf_service_urls` for your running core and Slack fixture. The
+checkpoint service uses its own URL. Publish the service URL subworkflow when testing
+execution. Keep node environment access blocked. The disposable harness binds
 generated credentials and loopback fixture URLs automatically.
+
+To refresh the editor from Git, first preview or save any local edits. The import replaces
+workflows with matching IDs and preserves the editor volume and credentials:
+
+```sh
+docker compose -p switchboard-editor -f docker-compose.n8n-dev.yml stop n8n-editor
+docker compose -p switchboard-editor -f docker-compose.n8n-dev.yml run --rm --no-deps --entrypoint n8n n8n-editor import:workflow --separate --input=/switchboard/workflows
+docker compose -p switchboard-editor -f docker-compose.n8n-dev.yml up -d
+```
+
+Use `python scripts/export_workflows` to preview changed file names and add `--write` to save
+the sanitized exports. The script exports existing repository workflows by ID, strips editor
+credential bindings and pinned data, restores repository placeholder bindings, and writes
+inactive exports. Review the diff before committing and keep all secrets in n8n credentials.
 
 The Gmail-shaped manual trigger enters the same case pipeline as the Gmail trigger. Core
 owns drafting, policy, and queueing. Slack approval and mock dispatch run as separate

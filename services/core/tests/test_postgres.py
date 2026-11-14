@@ -1105,6 +1105,11 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
             client.post(expired_action + "/consume", headers=worker_headers, json=grant).status_code
             == 409
         )
+        real_branch = client.post(
+            action + "/consume", headers=worker_headers, json={**grant, "adapter": "real"}
+        )
+        assert real_branch.status_code == 409
+        assert "Real dispatch is unavailable" in real_branch.json()["detail"]
         consumed = client.post(action + "/consume", headers=worker_headers, json=grant)
         assert consumed.status_code == 200 and consumed.json()["adapter"] == "mock"
         assert (

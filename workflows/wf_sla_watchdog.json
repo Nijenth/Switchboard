@@ -34,7 +34,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/actions/approvals/expire",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/approvals/expire' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -52,10 +52,42 @@
           "name": "Switchboard Approval"
         }
       }
+    },
+    {
+      "id": "SwitchboardSla1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
     }
   ],
   "connections": {
     "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Load service URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
       "main": [
         [
           {

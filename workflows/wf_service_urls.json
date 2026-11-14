@@ -1,0 +1,55 @@
+{
+  "id": "SwitchboardConfig1",
+  "name": "wf_service_urls",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardConfig1-1",
+      "name": "Receive workflow input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "SwitchboardConfig1-2",
+      "name": "Set core base URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map(item => ({json:{...item.json,core_base_url:'http://host.docker.internal:8000'}}));"
+      }
+    }
+  ],
+  "connections": {
+    "Receive workflow input": {
+      "main": [
+        [
+          {
+            "node": "Set core base URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

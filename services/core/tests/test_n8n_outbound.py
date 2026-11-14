@@ -4,6 +4,7 @@ import re
 import socket
 import subprocess
 import sys
+from asyncio import to_thread
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -221,6 +222,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
     posted: set[str] = set()
     slack_bot_token = token_hex(32)
     completion_lost = False
+    kill_worker: Callable[[], None] | None = None
 
     @app.middleware("http")
     async def lose_first_completion(
@@ -229,6 +231,8 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         nonlocal completion_lost
         if request.url.path == f"/actions/{action_id}/complete" and not completion_lost:
             completion_lost = True
+            if kill_worker is not None:
+                await to_thread(kill_worker)
             return JSONResponse({"detail": "Fixture connection lost"}, status_code=503)
         return await call_next(request)
 
@@ -356,6 +360,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             n8n_env = {
                 "N8N_ENCRYPTION_KEY": token_hex(32),
                 "N8N_BLOCK_ENV_ACCESS_IN_NODE": "true",
+                "NODE_FUNCTION_ALLOW_BUILTIN": "crypto",
                 "N8N_DIAGNOSTICS_ENABLED": "false",
                 "N8N_VERSION_NOTIFICATIONS_ENABLED": "false",
                 "N8N_USE_WORKFLOW_PUBLICATION_SERVICE": "false",
@@ -376,16 +381,17 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             for key in n8n_env:
                 args.extend(("-e", key))
 
-            def n8n(*command: str, expect_failure: bool = False) -> None:
+            def n8n(*command: str, expect_failure: bool = False, name: str | None = None) -> None:
+                run_args = [*args, "--name", name] if name else args
                 result = subprocess.run(
-                    ["docker", "--context", "desktop-linux", *args, IMAGE, *command],
+                    ["docker", "--context", "desktop-linux", *run_args, IMAGE, *command],
                     env={**os.environ, **n8n_env},
                     text=True,
                     capture_output=True,
                     timeout=100,
                     check=False,
                 )
-                if result.returncode != int(expect_failure) or (
+                if (result.returncode != 0) != expect_failure or (
                     expect_failure and not completion_lost
                 ):
                     # The CLI can dump complete node data, including ephemeral grants.
@@ -399,11 +405,14 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             n8n("import:workflow", "--separate", "--input=/fixture/workflows")
             n8n("publish:workflow", "--id=SwitchboardError1")
             n8n("publish:workflow", "--id=SwitchboardSend1")
+            n8n("publish:workflow", "--id=SwitchboardConfig1")
             n8n("execute", "--id=SwitchboardSlack1")
             assert posted == {str(request_id), str(action_review_id), str(refund_review)}
             interaction(core, request_id)
             interaction(core, action_review_id)
-            n8n("execute", "--id=SwitchboardDispatch1", expect_failure=True)
+            worker_name = "switchboard-crash-" + uuid4().hex
+            kill_worker = lambda: docker("kill", worker_name)
+            n8n("execute", "--id=SwitchboardDispatch1", expect_failure=True, name=worker_name)
             assert completion_lost
             with psycopg.connect(
                 host=config.db_host,
@@ -428,7 +437,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 n8n("execute", "--id=SwitchboardEmail1")
                 posted.clear()
                 n8n("execute", "--id=SwitchboardSlack1")
-                assert len(posted) == 2
+                assert len(posted) == 1
                 for review_id in sorted(posted):
                     interaction(core, review_id)
                 n8n("execute", "--id=SwitchboardDispatch1")

@@ -28,6 +28,7 @@ class Credential(BaseModel):
 class Consume(BaseModel):
     model_config = ConfigDict(extra="forbid")
     grant: GrantToken
+    adapter: Literal["mock", "real"] = "mock"
 
 
 class Complete(Consume):
@@ -141,6 +142,8 @@ def execution_router(
         body: Consume,
         credential: Annotated[Credential, Depends(worker)],
     ) -> object:
+        if body.adapter != "mock":
+            raise HTTPException(409, "Real dispatch is unavailable in the offline deployment")
         dispatch = transition(
             credential,
             "SELECT public.consume_mock_grant(%s,%s,%s)",
@@ -221,7 +224,8 @@ def execution_router(
                          SELECT 1 FROM public.policy_decisions p JOIN public.cases c
                            ON (c.tenant_id,c.id,c.policy_revision)=(p.tenant_id,p.case_id,p.revision)
                          WHERE (p.tenant_id,p.case_id,p.id)=(a.tenant_id,a.case_id,a.policy_decision_id)
-                           AND p.decision='auto' AND a.tool_key=ANY(p.allowed_tools)
+                           AND ((p.decision='auto' AND a.tool_key=ANY(p.allowed_tools))
+                                OR public.has_current_mock_reply_review(a,c.policy_revision))
                        )) OR (status = 'executing' AND claimed_by = %s
                             AND lease_expires_at > clock_timestamp()))
                      ORDER BY created_at, id LIMIT 100) item

@@ -34,7 +34,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ 'http://host.docker.internal:8000' + '/actions/dispatch/send_reply' }}",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/dispatch/send_reply' }}",
         "options": {
           "timeout": 5000,
           "redirect": {
@@ -73,6 +73,27 @@
           "waitForSubWorkflow": true
         }
       }
+    },
+    {
+      "id": "SwitchboardDispatch1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
     }
   ],
   "connections": {
@@ -80,7 +101,7 @@
       "main": [
         [
           {
-            "node": "List approved mock sends",
+            "node": "Load service URLs",
             "type": "main",
             "index": 0
           }
@@ -92,6 +113,17 @@
         [
           {
             "node": "Run mock send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
+      "main": [
+        [
+          {
+            "node": "List approved mock sends",
             "type": "main",
             "index": 0
           }

@@ -34,7 +34,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ 'http://host.docker.internal:8000' + '/actions/reconciliation/pending' }}",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/reconciliation/pending' }}",
         "options": {
           "timeout": 5000,
           "redirect": {
@@ -81,7 +81,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $json.action_id + '/reconcile' }}",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $json.action_id + '/reconcile' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.external_ref ? {outcome: 'found', lookup_ref: 'mock-outbound:' + $json.action_id, external_ref: $json.external_ref} : {outcome: 'absent', lookup_ref: 'mock-outbound:' + $json.action_id}) }}",
@@ -121,6 +121,27 @@
       "parameters": {
         "jsCode": "return $input.all().flatMap((item, index) => {\n  if (item.json.statusCode === 409) return [];\n  if (item.json.statusCode !== 200) throw new Error('Core reconciliation failed');\n  return [{json: {status: item.json.body.status}, pairedItem: {item: index}}];\n});"
       }
+    },
+    {
+      "id": "SwitchboardReconcile1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
     }
   ],
   "connections": {
@@ -128,7 +149,7 @@
       "main": [
         [
           {
-            "node": "List expired mock sends",
+            "node": "Load service URLs",
             "type": "main",
             "index": 0
           }
@@ -162,6 +183,17 @@
         [
           {
             "node": "Check reconciliation response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
+      "main": [
+        [
+          {
+            "node": "List expired mock sends",
             "type": "main",
             "index": 0
           }

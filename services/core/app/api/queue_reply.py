@@ -63,22 +63,16 @@ def queue_reply(conn: Connection[Any], tenant: UUID, case: UUID, message: UUID) 
             policy_id,
             trace,
             key,
-            "proposed" if decision == "auto" else "pending_approval",
+            "proposed",
             draft_id,
         ),
     ).fetchone()
     assert action is not None
-    if decision == "needs_approval":
-        if status == "pending":
-            conn.execute(
-                """INSERT INTO public.approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
-                   VALUES (%s,%s,'draft',%s,'Review outbound reply')""",
-                (tenant, case, draft_id),
-            )
+    if decision == "needs_approval" and status == "pending":
         conn.execute(
             """INSERT INTO public.approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
-               VALUES (%s,%s,'action',%s,'Approve mock outbound send')""",
-            (tenant, case, action[0]),
+               VALUES (%s,%s,'draft',%s,'Review outbound reply')""",
+            (tenant, case, draft_id),
         )
     audit(conn, tenant, trace, "action.queued", "action", action[0])
     return {"queued": True, "action_id": action[0]}

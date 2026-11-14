@@ -27,7 +27,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $('Receive action ID').item.json.action_id + '/claim' }}",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $('Receive action ID').item.json.action_id + '/claim' }}",
         "options": {
           "timeout": 5000,
           "response": {
@@ -76,7 +76,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $('Receive action ID').item.json.action_id + '/consume' }}",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $('Receive action ID').item.json.action_id + '/consume' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({grant: $json.grant}) }}",
@@ -145,7 +145,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: $json.external_ref}) }}",
@@ -166,6 +166,27 @@
           "name": "Switchboard Worker"
         }
       }
+    },
+    {
+      "id": "SwitchboardSend1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
     }
   ],
   "connections": {
@@ -173,7 +194,7 @@
       "main": [
         [
           {
-            "node": "Claim action",
+            "node": "Load service URLs",
             "type": "main",
             "index": 0
           }
@@ -229,6 +250,17 @@
         [
           {
             "node": "Complete consumed grant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
+      "main": [
+        [
+          {
+            "node": "Claim action",
             "type": "main",
             "index": 0
           }

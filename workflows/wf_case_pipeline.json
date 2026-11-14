@@ -26,7 +26,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "return $input.all().map(({json: m}) => {\n  const trace = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.floor(Math.random() * 16);\n    return (c === 'x' ? r : ((r & 3) | 8)).toString(16);\n  });\n  return {json:{...m, trace_id:trace, channel:'email'}};\n});"
+        "jsCode": "const { randomUUID } = require('crypto');\nreturn $input.all().map(({json: m}) => ({json:{...m, trace_id:randomUUID(), channel:'email'}}));"
       }
     },
     {
@@ -40,7 +40,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/ingest",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/ingest' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -53,7 +53,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json) }}"
+        "jsonBody": "={{ JSON.stringify($('Prepare canonical ingress').item.json) }}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -73,7 +73,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/understand",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/understand' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -106,7 +106,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/retrieve",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/retrieve' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -139,7 +139,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/drafts",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/drafts' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -172,7 +172,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8000/decide",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/decide' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -193,6 +193,27 @@
           "name": "Switchboard Decide"
         }
       }
+    },
+    {
+      "id": "SwitchboardCase1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        360,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
     }
   ],
   "connections": {
@@ -211,7 +232,7 @@
       "main": [
         [
           {
-            "node": "Ingest email",
+            "node": "Load service URLs",
             "type": "main",
             "index": 0
           }
@@ -256,6 +277,17 @@
         [
           {
             "node": "Decide and queue reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
+      "main": [
+        [
+          {
+            "node": "Ingest email",
             "type": "main",
             "index": 0
           }
