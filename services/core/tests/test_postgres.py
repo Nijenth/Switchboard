@@ -1354,3 +1354,160 @@ def test_late_mock_send_after_lease_expiry_has_no_effect(settings: Settings) -> 
         assert send(key, expired) == first
         assert send(f"draft-send:{uuid4()}", live) == []
         assert receipts() == 1
+
+
+def test_lookups_verify_identity_before_reading_order_data(
+    client: TestClient, credentials: dict[str, str], settings: Settings
+) -> None:
+    """ADR 0019: pack lookups run in order, and order data needs a verified identity first."""
+
+    def ingest_with_order(sender: str) -> dict[str, str]:
+        delivery = {
+            **make_payload(SUPPORT),
+            "sender": {"address": sender},
+            "body_text": "Where is my order NW-1001?",
+        }
+        created = client.post("/ingest", json=delivery, headers=bearer(credentials[SUPPORT]))
+        assert created.status_code == 200, created.text
+        body = {key: created.json()[key] for key in ("case_id", "message_id")}
+        # Store the validated extraction that /understand would record for this message.
+        with (
+            create_pool(settings, max_size=1) as pool,
+            pool.connection() as conn,
+            conn.transaction(),
+        ):
+            verify_cluster(conn, "switchboard_core")
+            conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+            conn.execute(
+                """
+                INSERT INTO public.extractions
+                    (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,status)
+                SELECT tenant_id,id,%s,pack_id,'order_reference',1,%s,'validated'
+                FROM public.cases WHERE tenant_id=%s AND id=%s
+                """,
+                (
+                    body["message_id"],
+                    dumps({"order_number": "NW-1001"}),
+                    NORTHWIND,
+                    body["case_id"],
+                ),
+            )
+        return body
+
+    lookup_token, worker_token, decide_token = token_hex(32), token_hex(32), token_hex(32)
+    config = replace(
+        settings,
+        lookup_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": lookup_token}]),
+        decide_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": decide_token}]),
+        execution_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "role": "worker",
+                    "principal": "lookup-worker",
+                    "token": worker_token,
+                }
+            ]
+        ),
+    )
+    worker = bearer(worker_token)
+
+    def run(api: TestClient, action_id: str, output: dict[str, object]) -> dict[str, object]:
+        claimed = api.post(f"/actions/{action_id}/claim", headers=worker)
+        assert claimed.status_code == 200, claimed.text
+        grant = {"grant": claimed.json()["grant"]}
+        consumed = api.post(f"/actions/{action_id}/consume", headers=worker, json=grant)
+        assert consumed.status_code == 200, consumed.text
+        done = api.post(
+            f"/actions/{action_id}/complete",
+            headers=worker,
+            json={**grant, "external_ref": f"lookup-{action_id}", "output": output},
+        )
+        assert done.status_code == 200, done.text
+        dispatch: dict[str, object] = consumed.json()
+        return dispatch
+
+    with TestClient(create_app(config)) as api:
+        body = ingest_with_order("emma.jones@example.com")
+        assert api.post("/lookups", json=body, headers=bearer(token_hex(32))).status_code == 403
+        first = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
+        assert [item["tool_key"] for item in first["pending"]] == ["order_identity_check"]
+        assert {"tool_key": "order_lookup", "reason": "identity_unverified"} in first["waiting"]
+        check = first["pending"][0]["action_id"]
+        assert api.post("/lookups", json=body, headers=bearer(lookup_token)).json() == first
+
+        # A result that does not match the registry output schema is refused.
+        claimed = api.post(f"/actions/{check}/claim", headers=worker).json()
+        api.post(f"/actions/{check}/consume", headers=worker, json={"grant": claimed["grant"]})
+        invalid = api.post(
+            f"/actions/{check}/complete",
+            headers=worker,
+            json={"grant": claimed["grant"], "external_ref": "x", "output": {"order_found": True}},
+        )
+        assert invalid.status_code == 422
+        completed = api.post(
+            f"/actions/{check}/complete",
+            headers=worker,
+            json={
+                "grant": claimed["grant"],
+                "external_ref": "identity-check",
+                "output": {"order_found": True, "identity_verified": True},
+            },
+        )
+        assert completed.status_code == 200, completed.text
+
+        second = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
+        assert second["completed"] == ["order_identity_check"]
+        assert [item["tool_key"] for item in second["pending"]] == ["order_lookup"]
+        dispatch = run(
+            api,
+            second["pending"][0]["action_id"],
+            {
+                "order_status": "shipped",
+                "carrier": "UPS",
+                "tracking_number": "1Z999AA10123456784",
+                "estimated_delivery_at": None,
+            },
+        )
+        assert dispatch["input"] == {"order_number": "NW-1001"}
+        third = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
+        assert (third["pending"], sorted(third["completed"])) == (
+            [],
+            ["order_identity_check", "order_lookup"],
+        )
+        decided = api.post("/decide", json=body, headers=bearer(decide_token))
+        assert decided.status_code == 200, decided.text
+
+        # A sender who does not own the order never unlocks the order lookup.
+        stranger = ingest_with_order("stranger@example.test")
+        pending = api.post("/lookups", json=stranger, headers=bearer(lookup_token)).json()
+        run(
+            api,
+            pending["pending"][0]["action_id"],
+            {"order_found": True, "identity_verified": False},
+        )
+        after = api.post("/lookups", json=stranger, headers=bearer(lookup_token)).json()
+        assert after["pending"] == []
+        assert {"tool_key": "order_lookup", "reason": "identity_unverified"} in after["waiting"]
+
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        verified = conn.execute(
+            "SELECT id, identity_verified FROM public.cases WHERE tenant_id=%s AND id IN (%s,%s)",
+            (NORTHWIND, body["case_id"], stranger["case_id"]),
+        ).fetchall()
+        assert dict(verified) == {UUID(body["case_id"]): True, UUID(stranger["case_id"]): False}
+        row = conn.execute(
+            """SELECT inputs->'checks' FROM public.policy_decisions
+               WHERE tenant_id=%s AND case_id=%s AND message_id=%s""",
+            (NORTHWIND, body["case_id"], body["message_id"]),
+        ).fetchone()
+        assert row is not None
+        assert row[0]["order_status"] == "shipped" and row[0]["identity_verified"] is True
+        events = conn.execute(
+            """SELECT count(*) FROM public.audit_log WHERE tenant_id=%s AND entity_id=%s
+               AND event_type='case.identity_verified'""",
+            (NORTHWIND, body["case_id"]),
+        ).fetchone()
+        assert events == (1,)

@@ -1,5 +1,6 @@
 tools:
   - key: kb_search
+  - key: order_identity_check
   - key: order_lookup
   - key: refund_eligibility_check
   - key: refund_issue

@@ -25,6 +25,7 @@ class Settings:
     decide_credentials: str | None = field(default=None, repr=False)
     retrieve_credentials: str | None = field(default=None, repr=False)
     draft_credentials: str | None = field(default=None, repr=False)
+    lookup_credentials: str | None = field(default=None, repr=False)
     offline_gateway_url: str | None = None
     understand_primary: Provider = "openai"
 
@@ -47,6 +48,7 @@ class Settings:
             decide_credentials=environ.get("SWITCHBOARD_DECIDE_CREDENTIALS"),
             retrieve_credentials=environ.get("SWITCHBOARD_RETRIEVE_CREDENTIALS"),
             draft_credentials=environ.get("SWITCHBOARD_DRAFT_CREDENTIALS"),
+            lookup_credentials=environ.get("SWITCHBOARD_LOOKUP_CREDENTIALS"),
             offline_gateway_url=environ.get("SWITCHBOARD_OFFLINE_GATEWAY_URL"),
             understand_primary="openai" if primary == "openai" else "anthropic",
         )

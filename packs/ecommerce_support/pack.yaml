@@ -54,3 +54,14 @@ knowledge:
 evals: evals/cases.jsonl
 output_schemas:
   draft_reply: schemas/reply.v1.json
+# Read-only lookups the core proposes after understanding a message, in order. Inputs map
+# from validated extraction fields or the message sender. Tools that require a verified
+# identity run only after an identity check has verified the case.
+lookups:
+  - tool: order_identity_check
+    input:
+      order_number: extraction.order_number
+      sender_email: message.sender_address
+  - tool: order_lookup
+    input:
+      order_number: extraction.order_number

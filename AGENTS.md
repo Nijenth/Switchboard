@@ -304,6 +304,7 @@ POST /route                  pick pack for a case (endpoint mapping or AI router
 POST /guardrails/in          redact PII, detect injection, detect language
 POST /understand             classify + extract with the case's pack
 POST /retrieve               RAG search scoped to tenant + pack
+POST /lookups                propose the pack's read-only lookups for a message (identity first)
 POST /decide                 run the decision pipeline → policy_decision (+ proposed actions)
 POST /actions/{id}/claim     atomically claim an approved/auto-allowed action → single-use execution grant
 POST /actions/{id}/consume   consume a mock grant once and return the approved connector payload

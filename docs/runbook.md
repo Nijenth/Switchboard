@@ -36,6 +36,19 @@ workflow. Only the send adapter is wired for mock dispatch.
 Run `bash scripts/test_core.sh --offline-n8n` with the pinned images already cached to
 exercise the synthetic email through Slack and the mock receipt.
 
+## Pack lookups and identity (ADR 0019)
+
+Set `SWITCHBOARD_LOOKUP_CREDENTIALS` to a JSON list of tenant IDs and tokens. After
+`/understand` stores a validated extraction, call `POST /lookups` with the case and message IDs.
+Run each `pending` action through `/actions/{id}/claim`, `/consume` and `/complete` with a worker
+credential, sending the tool result as `output`. Call `/lookups` again until `pending` is empty.
+`waiting` explains anything not proposed: `identity_unverified` means the identity check did not
+verify the sender, and `input_unavailable` means no validated extraction supplied the inputs.
+
+Failure modes: a result that does not match the tool's output schema returns 422 and leaves the
+action executing until its lease expires; reconcile it like any other mock action. A failed or
+unknown lookup stays in `waiting` with its status because lookup keys are fixed per message.
+
 ## Offline drafting
 
 Apply migration 018 and set `SWITCHBOARD_DRAFT_CREDENTIALS` to a JSON list of tenant IDs and

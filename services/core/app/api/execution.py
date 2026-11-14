@@ -7,10 +7,21 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from jsonschema import Draft202012Validator
 from psycopg import Connection, DataError, Error, IntegrityError, OperationalError
 from psycopg.errors import InsufficientPrivilege, RaiseException
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+from referencing import Registry
 
 GrantToken = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Reference = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[^\x00]+$")]
@@ -33,6 +44,8 @@ class Consume(BaseModel):
 
 class Complete(Consume):
     external_ref: Reference
+    # Read tools return a result, validated against the tool's registry output schema.
+    output: dict[str, JsonValue] | None = None
 
 
 class Evidence(BaseModel):
@@ -159,16 +172,33 @@ def execution_router(
         body: Complete,
         credential: Annotated[Credential, Depends(worker)],
     ) -> dict[str, str]:
-        result = transition(
-            credential,
-            "SELECT public.complete_mock_action(%s,%s,%s,%s)",
-            (
-                action_id,
-                credential.principal,
-                sha256(body.grant.encode("ascii")).digest(),
-                body.external_ref,
-            ),
-        )
+        digest = sha256(body.grant.encode("ascii")).digest()
+        if body.output is None:
+            result = transition(
+                credential,
+                "SELECT public.complete_mock_action(%s,%s,%s,%s)",
+                (action_id, credential.principal, digest, body.external_ref),
+            )
+        else:
+            schema = transition(
+                credential,
+                """
+                SELECT t.output_schema FROM public.actions a JOIN public.tools t ON t.key=a.tool_key
+                WHERE a.tenant_id=%s AND a.id=%s AND a.risk_level='read'
+                """,
+                (credential.tenant_id, action_id),
+            )
+            if (
+                not isinstance(schema, dict)
+                or not schema
+                or not Draft202012Validator(schema, registry=Registry()).is_valid(body.output)
+            ):
+                raise HTTPException(422, "Read result does not match the tool's output schema")
+            result = transition(
+                credential,
+                "SELECT public.complete_mock_read(%s,%s,%s,%s,%s)",
+                (action_id, credential.principal, digest, body.external_ref, Jsonb(body.output)),
+            )
         if result is not True:
             raise HTTPException(409, "Grant cannot complete this action")
         return {"status": "executed"}

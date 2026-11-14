@@ -138,6 +138,41 @@ def check_condition(
             raise PackError(f"{label}: unknown condition intent")
 
 
+def check_lookups(
+    root: Path,
+    config: dict[str, Any],
+    selected: dict[str, dict[str, Any]],
+    registry: dict[str, dict[str, Any]],
+    fields: set[str],
+) -> None:
+    """Lookups must be selected read tools whose declared inputs map onto known fields."""
+    label = f"{root}/pack.yaml:lookups"
+    seen = set()
+    outputs: set[str] = set()
+    for entry in config.get("lookups", []):
+        key = entry["tool"]
+        tool = registry.get(key)
+        if key not in selected or tool is None or tool["risk_level"] != "read":
+            raise PackError(f"{label}: {key} must be a read tool selected in tools.yaml")
+        if key in seen:
+            raise PackError(f"{label}: duplicate lookup {key}")
+        seen.add(key)
+        schema = tool.get("input_schema")
+        if not isinstance(schema, dict) or "output_schema" not in tool:
+            raise PackError(f"{label}: {key} needs registry input and output schemas")
+        expected = set(schema.get("properties", {}))
+        if set(entry["input"]) != expected or not set(schema.get("required", [])) <= expected:
+            raise PackError(f"{label}: {key} inputs must match its input schema")
+        for source in entry["input"].values():
+            if source.startswith("extraction.") and source not in fields:
+                raise PackError(f"{label}: unknown lookup source {source}")
+        # Lookup results merge into flat checks.* fields, so names must not collide.
+        produced = set(tool["output_schema"].get("properties", {}))
+        if produced & outputs:
+            raise PackError(f"{label}: {key} output fields collide with an earlier lookup")
+        outputs |= produced
+
+
 def read_contract(path: Path) -> set[str]:
     try:
         return contract(json.loads(path.read_text(encoding="utf-8")), str(path))
@@ -221,6 +256,7 @@ def read_pack(root: Path, registry: dict[str, dict[str, Any]]) -> Pack:
         if not set(extraction["required_fields"]) <= properties:
             raise PackError(f"{root}/pack.yaml: unknown required extraction field")
         fields.update(f"extraction.{name}" for name in properties)
+    check_lookups(root, config, selected, registry, fields)
     for name in config.get("output_schemas", {}).values():
         read_contract(reference(root, name, "schemas", ".json"))
     for step, name in config.get("prompts", {}).items():

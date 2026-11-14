@@ -13,7 +13,7 @@ PACKS = Path(__file__).resolve().parents[2] / "packs"
 
 def test_all_released_packs_validate() -> None:
     tools, packs = read_catalog(PACKS)
-    assert len(tools) == 17
+    assert len(tools) == 18
     assert {pack.config["key"] for pack in packs} == {
         "ecommerce_support",
         "sales_leads",
@@ -34,6 +34,11 @@ def test_all_released_packs_validate() -> None:
         ("pack.yaml", "missing_prompt", "invalid or missing reference"),
         ("pack.yaml", "readme_as_prompt", "invalid or missing reference"),
         ("pack.yaml", "bad_extraction", "unknown required extraction field"),
+        ("pack.yaml", "lookup_not_read", "must be a read tool"),
+        ("pack.yaml", "lookup_unknown_source", "unknown lookup source"),
+        ("pack.yaml", "lookup_input_mismatch", "inputs must match its input schema"),
+        ("pack.yaml", "lookup_duplicate", "duplicate lookup"),
+        ("pack.yaml", "lookup_bad_source_syntax", "invalid pack structure"),
         ("tools.yaml", "unknown_tool", "unknown tool"),
         ("tools.yaml", "missing_approval", "requires approval"),
         ("tools.yaml", "threshold_bypass", "requires approval"),
@@ -69,6 +74,16 @@ def test_catalog_refuses_invalid_fixture(
             data["prompts"]["classify"] = "prompts/../README.md"
         case "bad_extraction":
             data["extraction"]["required_fields"] = ["missing"]
+        case "lookup_not_read":
+            data["lookups"][1]["tool"] = "refund_issue"
+        case "lookup_unknown_source":
+            data["lookups"][1]["input"]["order_number"] = "extraction.missing"
+        case "lookup_input_mismatch":
+            data["lookups"][0]["input"].pop("sender_email")
+        case "lookup_duplicate":
+            data["lookups"].append(data["lookups"][0])
+        case "lookup_bad_source_syntax":
+            data["lookups"][1]["input"]["order_number"] = "case.id"
         case "unknown_tool":
             data["tools"][0]["key"] = "unregistered"
         case "missing_approval" | "threshold_bypass":

@@ -155,6 +155,18 @@ def publish(
         ):
             label["confidence"] = None
     label["flags"] = [flag for (flag,) in flags]
+    # Results of completed read lookups for this message become checks.* (ADR 0019).
+    checks: dict[str, Any] = {}
+    for (output,) in conn.execute(
+        """
+        SELECT output FROM public.actions
+        WHERE tenant_id=%s AND case_id=%s AND message_id=%s AND risk_level='read'
+          AND status='executed' AND jsonb_typeof(output)='object'
+        ORDER BY executed_at, id
+        """,
+        message_scope[:3],
+    ):
+        checks.update(output)
     context = {
         "case": {
             "id": str(payload.case_id),
@@ -176,7 +188,7 @@ def publish(
             and extracted[3] == "validated"
             and extracted[4] >= classification[-1]
         ),
-        "checks": {},
+        "checks": checks,
     }
     budget_blocked = (
         budget is None

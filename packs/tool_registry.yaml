@@ -33,12 +33,60 @@
       "timeout_ms": 5000
     },
     {
+      "key": "order_identity_check",
+      "name": "Order identity check",
+      "description": "Confirm whether the sender's email matches the order's customer email, revealing no order data",
+      "risk_level": "read",
+      "requires_verified_identity": false,
+      "timeout_ms": 5000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "order_number": {"type": "string", "pattern": "^NW-[0-9]+$"},
+          "sender_email": {"type": "string", "minLength": 3, "maxLength": 320}
+        },
+        "required": ["order_number", "sender_email"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "order_found": {"type": "boolean"},
+          "identity_verified": {"type": "boolean"}
+        },
+        "required": ["order_found", "identity_verified"],
+        "additionalProperties": false
+      }
+    },
+    {
       "key": "order_lookup",
       "name": "Order lookup",
       "description": "Fetch order status, items, shipping and tracking",
       "risk_level": "read",
       "requires_verified_identity": true,
-      "timeout_ms": 10000
+      "timeout_ms": 10000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "order_number": {"type": "string", "pattern": "^NW-[0-9]+$"}
+        },
+        "required": ["order_number"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "order_status": {
+            "enum": ["pending", "paid", "processing", "shipped", "delivered", "cancelled",
+                     "refunded", "partially_refunded", "payment_failed"]
+          },
+          "carrier": {"type": ["string", "null"], "maxLength": 100},
+          "tracking_number": {"type": ["string", "null"], "maxLength": 100},
+          "estimated_delivery_at": {"type": ["string", "null"], "format": "date-time"}
+        },
+        "required": ["order_status", "carrier", "tracking_number", "estimated_delivery_at"],
+        "additionalProperties": false
+      }
     },
     {
       "key": "refund_eligibility_check",
