@@ -498,7 +498,62 @@ def test_decide_publishes_scoped_idempotent_policy(
         assert len(rows) == 1
         inputs, version = rows[0]
         assert inputs["classification"]["flags"] == ["prompt_injection"]
-        assert version == "engine:1+ecommerce_support:1"
+        assert version == "engine:2+ecommerce_support:1"
+
+
+def test_decide_persists_invalid_tenant_policy(
+    client: TestClient, credentials: dict[str, str], settings: Settings
+) -> None:
+    delivery = client.post(
+        "/ingest", json=make_payload(SUPPORT), headers=bearer(credentials[SUPPORT])
+    )
+    assert delivery.status_code == 200
+    message = delivery.json()
+    body = {key: message[key] for key in ("case_id", "message_id")}
+    token = token_hex(32)
+    config = replace(
+        settings, decide_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": token}])
+    )
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_config_loader",
+        password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+        autocommit=True,
+        connect_timeout=3,
+    ) as loader:
+        verify_cluster(loader, "switchboard_config_loader")
+        original = loader.execute(
+            "SELECT config::text FROM public.tenant_packs WHERE tenant_id=%s AND pack_key=%s",
+            (NORTHWIND, "ecommerce_support"),
+        ).fetchone()
+        assert original is not None
+        loader.execute(
+            """UPDATE public.tenant_packs SET config=config || '{"rules":null}'::jsonb
+               WHERE tenant_id=%s AND pack_key=%s""",
+            (NORTHWIND, "ecommerce_support"),
+        )
+        try:
+            with TestClient(create_app(config)) as api:
+                response = api.post("/decide", json=body, headers=bearer(token))
+                assert response.status_code == 200, response.text
+                result = response.json()
+                assert api.post("/decide", json=body, headers=bearer(token)).json() == result
+        finally:
+            loader.execute(
+                "UPDATE public.tenant_packs SET config=%s::jsonb WHERE tenant_id=%s AND pack_key=%s",
+                (original[0], NORTHWIND, "ecommerce_support"),
+            )
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        rows = conn.execute(
+            """SELECT decision,rule_id,required_role FROM public.policy_decisions
+               WHERE tenant_id=%s AND case_id=%s AND message_id=%s""",
+            (NORTHWIND, body["case_id"], body["message_id"]),
+        ).fetchall()
+        assert rows == [("escalate", "INVALID_POLICY", "admin")]
 
 
 def test_model_risk_flags_persist_and_escalate(

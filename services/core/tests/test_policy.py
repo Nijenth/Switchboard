@@ -189,3 +189,87 @@ def test_missing_data_applies_tightening_rules_but_not_loosening_rules() -> None
     pack["rules"] = {"rules": [loosening]}
     context["contact"] = {}
     assert decide(pack, context, TOOLS, set(), **evidence).rule_id == "DEFAULT_REVIEW"
+
+
+@pytest.mark.parametrize("locale", ["de", None])
+def test_later_escalation_outranks_earlier_auto(locale: str | None) -> None:
+    pack = deepcopy(PACK)
+    pack["rules"]["rules"].append(
+        {
+            "id": "REVIEW_LOCALE",
+            "when": {"field": "contact.locale", "op": "eq", "value": "de"},
+            "then": {"decision": "escalate", "reason": "Review this locale."},
+        }
+    )
+    context = {**CONTEXT, "contact": {"locale": locale}}
+    result = decide(pack, context, TOOLS, set(), citations_ok=True, output_ok=True)
+    assert (result.decision, result.rule_id, result.allowed_tools) == (
+        "escalate",
+        "REVIEW_LOCALE",
+        (),
+    )
+
+
+@pytest.mark.parametrize(("first", "second"), [("ignore", "auto"), ("auto", "ignore")])
+def test_pack_file_order_breaks_auto_ignore_ties(first: str, second: str) -> None:
+    rules = [
+        {
+            "id": rule_id,
+            "when": {"field": "case.identity_verified", "op": "eq", "value": True},
+            "then": {"decision": effect, "reason": "Fixture."},
+        }
+        for rule_id, effect in (("FIRST", first), ("SECOND", second))
+    ]
+    result = decide({**PACK, "rules": {"rules": rules}}, CONTEXT, TOOLS, set())
+    assert (result.decision, result.rule_id) == (first, "FIRST")
+
+
+def test_null_kind_triggers_tenant_escalation() -> None:
+    condition = {"field": "contact.kind", "op": "in", "value": ["lead", "unknown"]}
+    override = {
+        "id": "TENANT_KIND",
+        "when": condition,
+        "then": {"decision": "escalate", "reason": "Review unknown contacts."},
+    }
+    context = {**CONTEXT, "contact": {"kind": None}}
+    assert matches(condition, context, {"contact.kind"}) is None
+    assert matches({"field": "contact.kind", "op": "exists"}, context, {"contact.kind"}) is False
+    result = decide(PACK, context, TOOLS, set(), [override], citations_ok=True, output_ok=True)
+    assert (result.decision, result.rule_id, result.rule_source) == (
+        "escalate",
+        "TENANT_KIND",
+        "tenant",
+    )
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"thresholds": {}},
+        {"thresholds": {"auto_confidence": 0.8}},
+        {"thresholds": {"auto_confidence": True, "field_confidence": 0.9}},
+        {"rules": {}},
+        {"rules": {"rules": None}},
+        {"rules": {"rules": [{}]}},
+        {"assets": None},
+        {"extraction": {"required_fields": None}},
+        {"assets": {"extraction_schema": {"type": "object", "properties": []}}},
+    ],
+)
+def test_malformed_pack_escalates_for_admin(patch: dict[str, Any]) -> None:
+    result = decide({**PACK, **patch}, CONTEXT, TOOLS, set())
+    assert (result.decision, result.rule_id, result.required_role) == (
+        "escalate",
+        "INVALID_POLICY",
+        "admin",
+    )
+
+
+@pytest.mark.parametrize("overrides", [None, {}, "invalid", [{}]])
+def test_malformed_tenant_policy_escalates_for_admin(overrides: Any) -> None:
+    result = decide(PACK, CONTEXT, TOOLS, set(), overrides)
+    assert (result.decision, result.rule_id, result.required_role) == (
+        "escalate",
+        "INVALID_POLICY",
+        "admin",
+    )

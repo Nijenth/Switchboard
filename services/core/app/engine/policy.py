@@ -2,11 +2,16 @@
 
 import operator
 from dataclasses import dataclass
+from re import fullmatch
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 ORDER = {"ignore": 0, "auto": 1, "needs_approval": 2, "escalate": 3}
+PACK_ORDER = {**ORDER, "ignore": ORDER["auto"]}
 ROLES = {"agent", "manager", "finance", "admin"}
 RISK_FLAGS = {
     "prompt_injection",
@@ -50,7 +55,7 @@ def lookup(context: dict[str, Any], path: str) -> Any:
         if not isinstance(value, dict) or key not in value:
             return MISSING
         value = value[key]
-    return value
+    return MISSING if value is None else value
 
 
 def equal(left: Any, right: Any) -> bool:
@@ -126,6 +131,38 @@ class Decision:
     priority: str | None = None
 
 
+def validate_pack_policy(pack: Any) -> None:
+    if not isinstance(pack, dict):
+        raise InvalidRule("Invalid pack policy")
+    thresholds, rules = pack.get("thresholds"), pack.get("rules")
+    if not isinstance(thresholds, dict) or any(
+        type(thresholds.get(key)) not in (int, float) or not 0 <= thresholds[key] <= 1
+        for key in ("auto_confidence", "field_confidence")
+    ):
+        raise InvalidRule("Invalid pack thresholds")
+    if not isinstance(rules, dict) or not isinstance(rules.get("rules"), list):
+        raise InvalidRule("Invalid pack rule list")
+    assets = pack.get("assets", {})
+    if not isinstance(assets, dict):
+        raise InvalidRule("Invalid pack assets")
+    if "extraction" in pack:
+        extraction = pack["extraction"]
+        schema = assets.get("extraction_schema")
+        if (
+            not isinstance(extraction, dict)
+            or not isinstance(extraction.get("required_fields"), list)
+            or not isinstance(schema, dict)
+            or schema.get("type") != "object"
+        ):
+            raise InvalidRule("Invalid extraction policy")
+        Draft202012Validator.check_schema(schema)
+        if any(
+            not isinstance(key, str) or key not in schema.get("properties", {})
+            for key in extraction["required_fields"]
+        ):
+            raise InvalidRule("Invalid required extraction field")
+
+
 def rule_results(
     rules: Any, source: str, context: dict[str, Any], fields: set[str], tools: dict[str, Any]
 ) -> list[Decision]:
@@ -139,7 +176,7 @@ def rule_results(
         rule_id, effect = rule["id"], rule["then"]
         if (
             not isinstance(rule_id, str)
-            or not rule_id
+            or not fullmatch(r"[A-Z][A-Z0-9_]*", rule_id)
             or rule_id in seen
             or not isinstance(effect, dict)
         ):
@@ -155,10 +192,15 @@ def rule_results(
             or not isinstance(reason, str)
             or not reason.strip()
             or (role is not None and (not isinstance(role, str) or role not in ROLES))
-            or (queue is not None and (not isinstance(queue, str) or not queue))
+            or (
+                queue is not None
+                and (not isinstance(queue, str) or not fullmatch(r"[a-z][a-z0-9_]{2,50}", queue))
+            )
             or not isinstance(allowed, list)
             or any(not isinstance(key, str) or key not in tools for key in allowed)
+            or len(set(allowed)) != len(allowed)
             or (allowed and decision != "auto")
+            or any(tools[key]["risk_level"] == "money" for key in allowed)
         ):
             raise InvalidRule("Invalid policy effect")
         outcome = matches(rule["when"], context, fields)
@@ -202,7 +244,7 @@ def global_rules(
         invalid_extraction = (
             not context["extraction_valid"]
             or schema is None
-            or not Draft202012Validator(schema).is_valid(data)
+            or not Draft202012Validator(schema, registry=Registry()).is_valid(data)
             or any(
                 key not in data or scores.get(key, 0) < thresholds["field_confidence"]
                 for key in extraction["required_fields"]
@@ -287,35 +329,52 @@ def global_rules(
 
 
 def decide(
-    pack: dict[str, Any],
+    pack: Any,
     context: dict[str, Any],
     tools: dict[str, Any],
     proposed: set[str],
-    overrides: Any = (),
+    overrides: Any = MISSING,
     *,
     citations_ok: bool = False,
     output_ok: bool = False,
     budget_blocked: bool = False,
 ) -> Decision:
-    fields = FIELDS | {
-        f"extraction.{key}"
-        for key in pack.get("assets", {}).get("extraction_schema", {}).get("properties", {})
-    }
-    fields |= {f"checks.{key}" for tool in tools.values() for key in tool.get("check_fields", ())}
     default = Decision(
         "needs_approval", "DEFAULT_REVIEW", "default", "No rule authorized automatic handling."
     )
     try:
+        validate_pack_policy(pack)
+        fields = (
+            FIELDS
+            | {
+                f"extraction.{key}"
+                for key in pack["assets"]["extraction_schema"].get("properties", {})
+            }
+            if "extraction" in pack
+            else FIELDS.copy()
+        )
+        fields |= {
+            f"checks.{key}" for tool in tools.values() for key in tool.get("check_fields", ())
+        }
         pack_matches = rule_results(pack["rules"]["rules"], "pack", context, fields, tools)
-        candidate = next(iter(pack_matches), default)
+        candidate = max(pack_matches, key=lambda item: PACK_ORDER[item.decision], default=default)
         tenant_matches = rule_results(
-            list(overrides) if isinstance(overrides, tuple) else overrides,
+            [] if overrides is MISSING else overrides,
             "tenant",
             context,
             fields,
             tools,
         )
-    except InvalidRule:
+        guards = global_rules(
+            pack,
+            context,
+            proposed | set(candidate.allowed_tools),
+            tools,
+            citations_ok=citations_ok,
+            output_ok=output_ok,
+            budget_blocked=budget_blocked,
+        )
+    except (InvalidRule, SchemaError, Unresolvable, RecursionError):
         return Decision(
             "escalate",
             "INVALID_POLICY",
@@ -324,16 +383,6 @@ def decide(
             "admin",
             priority="urgent",
         )
-    selected = proposed | set(candidate.allowed_tools)
-    guards = global_rules(
-        pack,
-        context,
-        selected,
-        tools,
-        citations_ok=citations_ok,
-        output_ok=output_ok,
-        budget_blocked=budget_blocked,
-    )
     if guards:
         candidate = max([*guards, candidate], key=lambda item: ORDER[item.decision])
     for override in tenant_matches:

@@ -248,8 +248,10 @@ rules:
 
 Decisions: `auto`, `needs_approval`, `escalate`, `ignore` (spam, auto-replies, out-of-office).
 
-Evaluated in this order. The first rule that matches decides, **except** that later layers may only make
-a decision *stricter*, never looser. Strictness: `escalate > needs_approval > auto > ignore`.
+Evaluate global safety rules, pack rules, and then tenant tightening rules. Among matching pack
+rules, `escalate` outranks `needs_approval`, which outranks `auto` and `ignore`. File order breaks
+ties, including between `auto` and `ignore`. Missing or null condition data can trigger
+`needs_approval` or `escalate`. Global safety and tenant rules can only tighten the result.
 
 1. **Global safety rules** (engine code, cannot be overridden by packs or tenants):
    - G1 Prompt injection, legal threat, chargeback, safety or harassment flag → `escalate` (urgent)
@@ -261,7 +263,7 @@ a decision *stricter*, never looser. Strictness: `escalate > needs_approval > au
    - G6 Outbound text with no citation (knowledge chunk or tool result) → `needs_approval`
    - G7 Output guardrail failure (PII leak, promise beyond policy, tone) → `needs_approval`
    - G8 Tenant monthly AI budget exceeded → `needs_approval` with no further LLM calls
-2. **Pack rules** (`rules.yaml`), in file order.
+2. **Pack rules** (`rules.yaml`), strictest match first.
 3. **Tenant overrides** (`tenant_packs.config.rules`). These can only tighten.
 4. **Default:** `needs_approval`.
 

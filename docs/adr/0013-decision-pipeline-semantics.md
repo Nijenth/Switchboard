@@ -14,13 +14,21 @@ pattern checks, so `safety` and `harassment` were never raised.
 
 ## Decision
 
-- **Unknown data fails closed for tightening rules.** Conditions use three-valued logic: a
-  missing field makes a leaf unknown, and `not`, `all` and `any` propagate unknown. A pack or
-  tenant rule whose effect is `needs_approval` or `escalate` applies when its condition is
-  unknown, and its reason records that required data was missing. A rule whose effect is `auto`
-  or `ignore` applies only when its condition is definitely true.
-- **The engine is pack-agnostic.** Any pinned, enabled pack that publishes rules and thresholds
-  can be decided. Malformed rule content returns `escalate` with `INVALID_POLICY`.
+- **Unknown data fails closed for tightening rules.** Missing and null fields behave alike.
+  `exists` treats both as absent. Comparisons can return unknown, which propagates through
+  `not`, `all`, and `any` unless another operand determines the result. Unknown qualifies
+  `needs_approval` and `escalate` rules. `auto` and `ignore` require a definite match.
+- **Strictest pack match wins.** Escalation outranks approval, and both outrank `auto` and
+  `ignore`. File order breaks ties within each rank. Global guards and tenant rules can
+  tighten the selected result. The winning reason includes a missing-data annotation when
+  that rule matched on unknown.
+- **The engine is pack-agnostic.** It validates the policy inputs it consumes, including
+  thresholds, rule lists, rule structure, and extraction schema when configured. An invalid
+  policy yields urgent `escalate` with `INVALID_POLICY` and the `admin` role. `/decide`
+  persists that decision for an eligible case and its latest inbound message. Case
+  eligibility, credential errors, and database failures retain their normal API responses.
+  Extraction validation uses the existing JSON Schema reference registry with no remote
+  retrieval.
 - **The model may propose risk flags.** Classification output must include `risk_flags`, an
   array limited to `safety`, `harassment`, `legal_threat` and `chargeback`. Flags are stored on
   the model's classification row and can only tighten: any flag escalates through G1. The
@@ -31,11 +39,7 @@ pattern checks, so `safety` and `harassment` were never raised.
 
 ## Consequences
 
-A rule written as "escalate unless X" can no longer be bypassed by omitting X. Rules keyed on a
-classification can now apply when classification is missing; global rule G4 still wins those
-ties, so the stated reason is the low-confidence rule. Escalation rules in other packs (for
-example a bank-detail-change escalation) also fire when their data is missing, which may raise
-more escalations until those packs mature. Enabling `/decide` for the minimal `sales_leads` and
-`invoice_processing` packs is safe because nothing calls it for them yet and their decisions
-default to human review. The AGENTS.md coverage gate of 90% for `app/engine` needs a coverage
-tool, which is a new development dependency and is pending owner approval.
+A stricter pack rule can supersede an earlier rule even when it matched on missing data.
+Global guards win ties against pack decisions. An escalation triggered by missing data
+outranks G4. Existing decision records keep their policy version. New publications use
+`engine:2`. The 90% engine coverage measurement is pending owner approval for a coverage tool.

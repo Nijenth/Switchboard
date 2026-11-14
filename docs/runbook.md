@@ -13,6 +13,8 @@ pack is unavailable for retrieval.
 Verify ranking and scope in the disposable PostgreSQL suite. The token-hash encoder is
 offline and its ranking is **built, not measured**. See ADR 0014.
 
+Later work includes paragraph-level knowledge chunks and expected-document checks in evals.
+
 ## Phase 2 offline AI checks
 
 Build the disposable database image and pull the pinned gateway images with

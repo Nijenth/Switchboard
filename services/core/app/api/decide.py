@@ -61,15 +61,6 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         contact_kind,
         contact_locale,
     ) = row
-    # The engine stays pack-agnostic: any pinned pack that publishes rules and thresholds is
-    # decidable. Malformed rule content is handled inside the engine (INVALID_POLICY).
-    policy_rules = pack.get("rules") if isinstance(pack, dict) else None
-    if (
-        not isinstance(policy_rules, dict)
-        or "rules" not in policy_rules
-        or not isinstance(pack.get("thresholds"), dict)
-    ):
-        raise HTTPException(409, "Pinned pack has no published decision policy")
     latest = conn.execute(
         """
         SELECT id,trace_id FROM public.messages
@@ -184,7 +175,7 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         or budget[0]
         or (blocked_attempt is not None and blocked_attempt[0] == "budget_blocked")
     )
-    overrides = enrollment.get("rules", [])
+    overrides = enrollment.get("rules", []) if isinstance(enrollment, dict) else None
     decision = decide(pack, context, tools, proposed, overrides, budget_blocked=budget_blocked)
     result = {**asdict(decision), "allowed_tools": list(decision.allowed_tools)}
     inputs = {
@@ -198,7 +189,7 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         "tenant_rules": overrides,
         "result": result,
     }
-    policy_version = f"engine:1+{pack_key}:{version}"
+    policy_version = f"engine:2+{pack_key}:{version}"
     previous = conn.execute(
         """
         SELECT id,inputs FROM public.policy_decisions
