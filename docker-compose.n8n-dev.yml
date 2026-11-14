@@ -1,0 +1,26 @@
+services:
+  n8n-editor:
+    image: docker.n8n.io/n8nio/n8n:2.46.7
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ ! -f /home/node/.n8n/.switchboard-imported ]; then
+          n8n import:workflow --separate --input=/switchboard/workflows
+          touch /home/node/.n8n/.switchboard-imported
+        fi
+        exec n8n start
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+      EXECUTIONS_DATA_SAVE_ON_ERROR: none
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: none
+    volumes:
+      - editor:/home/node/.n8n
+      - ./workflows:/switchboard/workflows:ro
+
+volumes:
+  editor:

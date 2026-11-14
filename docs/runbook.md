@@ -1,5 +1,26 @@
 # Switchboard runbook
 
+## Local n8n visual editor
+
+Run `docker compose -p switchboard-editor -f docker-compose.n8n-dev.yml up -d` and open
+`http://127.0.0.1:5678`. Complete the local owner setup in the browser. The service imports
+the inactive workflow exports on first startup and preserves your edits in a named volume.
+It imports no credentials. Keep Gmail and schedules inactive while inspecting the workflows.
+
+HTTP nodes use named Header Auth credentials with header name `Authorization` and a bearer
+value scoped to the node's endpoint. The mock PostgreSQL nodes use the separate mock login.
+Adjust the visible fixture URLs in a local copy for your running core, Slack fixture, and
+checkpoint service. Keep node environment access blocked. The disposable harness binds
+generated credentials and loopback fixture URLs automatically.
+
+The Gmail-shaped manual trigger enters the same case pipeline as the Gmail trigger. Core
+owns drafting, policy, and queueing. Slack approval and mock dispatch run as separate
+workflows so a reply can wait for a reviewer. The SLA watchdog calls the existing database
+expiry transition through core. Refund action approvals can be posted by the same Slack
+workflow. Only the send adapter is wired for mock dispatch.
+Run `bash scripts/test_core.sh --offline-n8n` with the pinned images already cached to
+exercise the synthetic email through Slack and the mock receipt.
+
 ## Offline drafting
 
 Apply migration 018 and set `SWITCHBOARD_DRAFT_CREDENTIALS` to a JSON list of tenant IDs and
