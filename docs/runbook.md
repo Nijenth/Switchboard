@@ -62,7 +62,7 @@ If a lookup completes while `/drafts` waits for the model, `/drafts` returns 409
 ## Mock order refunds
 
 Apply migration 024 and run the demo seed and pack loader against a fresh demo database.
-The seed pins Northwind to ecommerce support v2. Bind a separate tenant-scoped
+The seed pins Northwind to ecommerce support v3. Bind a separate tenant-scoped
 `SWITCHBOARD_REFUND_CREDENTIALS` token to the Refund Header Auth placeholder. Import the
 eligibility and refund-issue workflows with the mock Postgres credential and refresh the
 case pipeline, lookup runner, dispatcher, and reconciler.

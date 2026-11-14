@@ -19,7 +19,7 @@ services:
     volumes:
       - ./scripts/fake_model.py:/fixture/fake_model.py:ro
       - ./services/core/app:/core/app:ro
-      - ./packs/ecommerce_support.v2/evals:/fixtures:ro
+      - ./packs/ecommerce_support.v3/evals:/fixtures:ro
     networks: [offline-ai]
   offline-relay:
     image: python:3.12.12-slim-bookworm

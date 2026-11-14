@@ -88,6 +88,6 @@ fi
     cd services/core
     python -m pytest -q -rs --tb=short
     if [[ $offline == true ]]; then
-        python -m app.eval_runner --tenant 10000000-0000-0000-0000-000000000001 --version 2
+        python -m app.eval_runner --tenant 10000000-0000-0000-0000-000000000001 --version 3
     fi
 )

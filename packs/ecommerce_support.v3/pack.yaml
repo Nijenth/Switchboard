@@ -1,0 +1,76 @@
+input_channels:
+  - email
+  - web_chat
+default_queue: customer_support
+thresholds:
+  auto_confidence: 0.8
+  field_confidence: 0.9
+key: ecommerce_support
+version: 3
+name: E-commerce Support
+description: Answer order, shipping and policy questions; propose refunds for approval; escalate risk.
+intents:
+  - key: order_status
+    description: Where is my order / tracking
+    default_priority: normal
+  - key: shipping_delay
+    description: Order is late or lost
+    default_priority: high
+  - key: returns_refunds
+    description: Return, exchange or refund request
+    default_priority: normal
+  - key: payment_issue
+    description: Payment failed, double charge, billing
+    default_priority: high
+  - key: product_question
+    description: Sizing, materials, stock, shipping policy
+    default_priority: low
+  - key: complaint
+    description: Dissatisfaction with service or product
+    default_priority: high
+  - key: account
+    description: Login, address change, data request
+    default_priority: normal
+  - key: other
+    description: Anything else, including suspicious content
+    default_priority: normal
+  - key: spam_or_auto
+    description: Spam, auto-replies, out-of-office
+    default_priority: low
+extraction:
+  schema: schemas/order_reference.v1.json
+  required_fields: []
+prompts:
+  classify: prompts/classify.v1.md
+  extract: prompts/extract.v1.md
+  draft_reply: prompts/draft_reply.v1.md
+knowledge:
+  - file: knowledge/shipping.md
+    title: Shipping Policy
+    doc_type: policy
+  - file: knowledge/refunds.md
+    title: Returns & Refunds Policy
+    doc_type: policy
+evals: evals/cases.jsonl
+output_schemas:
+  draft_reply: schemas/reply.v1.json
+# Read-only lookups the core proposes after understanding a message, in order. Inputs map
+# from validated extraction fields or the message sender. Tools that require a verified
+# identity run only after an identity check has verified the case. An optional evidence
+# sentence renders the result for drafts to quote and cite.
+lookups:
+  - tool: order_identity_check
+    input:
+      order_number: extraction.order_number
+      sender_email: message.sender_address
+  - tool: order_lookup
+    input:
+      order_number: extraction.order_number
+    evidence: Your order {order_number} is {order_status} with {carrier}, tracking number {tracking_number}.
+  - tool: order_refund_eligibility
+    input:
+      order_number: extraction.order_number
+    evidence: The refund eligibility result for order {order_number} is {reason}.
+refund:
+  tool: order_refund_issue
+  intent: returns_refunds
