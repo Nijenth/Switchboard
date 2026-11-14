@@ -281,8 +281,6 @@ UPDATE actions SET status='pending_approval' WHERE idempotency_key LIKE 'unscope
 SELECT public.record_approval_decision(id,'20000000-0000-0000-0000-000000000002','approved','api')
   FROM approval_requests WHERE subject_id IN (SELECT id FROM actions WHERE idempotency_key LIKE 'unscoped:refund_issue:%')
   \g /dev/null
-UPDATE actions SET status='approved',approved_by='20000000-0000-0000-0000-000000000002'
- WHERE idempotency_key LIKE 'unscoped:refund_issue:%';
 ALTER TABLE public.approval_requests ENABLE TRIGGER approval_requests_validate_order_money;
 ALTER TABLE public.actions ENABLE TRIGGER actions_validate_order;
 ALTER TABLE public.actions ENABLE TRIGGER actions_validate_refund_evidence;

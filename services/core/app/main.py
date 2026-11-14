@@ -172,7 +172,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ).fetchone()
                     assert row is not None
                     return {"decision_id": row[0], "tenant_id": row[1]}
-            except InsufficientPrivilege:
+            except InsufficientPrivilege as error:
+                if (
+                    BUTTONS[button.action_id] == "approved"
+                    and error.diag.message_primary == "Slack reviewer lacks the required role"
+                ):
+                    raise HTTPException(409, "Reviewer cannot satisfy the approval role") from None
                 raise HTTPException(403, "Reviewer is not authorized") from None
             except (DataError, IntegrityError, RaiseException):
                 raise HTTPException(409, "Approval could not be recorded") from None

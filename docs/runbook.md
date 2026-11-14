@@ -92,6 +92,14 @@ event with reason `approval_claim_window_elapsed` when a fresh message can
 propose a refund again. If the action already has a claim, use the reconciliation
 procedure below and keep the reservation while evidence is inconclusive.
 
+Deploy migration 027 and the matching core version together. Pause approvals
+while applying the migration and replacing core because the older API expects
+to promote the action itself. If promotion returns `409`, inspect the review role,
+current policy and refund eligibility. The request stays pending and the normal
+SLA applies. Migration 027 runs without a backfill. The migration 026 watchdog
+cancels older approved requests whose actions remained unclaimed, including
+actions still in `pending_approval`.
+
 ## Offline drafting
 
 Apply migration 018 and set `SWITCHBOARD_DRAFT_CREDENTIALS` to a JSON list of tenant IDs and

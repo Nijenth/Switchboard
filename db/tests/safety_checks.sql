@@ -122,12 +122,13 @@ SELECT pg_temp.expect_error('resolved request cannot be decided again',
   $q$SELECT public.record_approval_decision('94000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000004','rejected','api')$q$,
   'already approved');
 
-SELECT pg_temp.expect_error('approved_by must be the actual approving reviewer',
+SELECT pg_temp.expect_error('the recorded reviewer cannot be changed after promotion',
   $q$UPDATE actions SET status='approved', approved_by='20000000-0000-0000-0000-000000000004' WHERE id='93000000-0000-0000-0000-000000000001'$q$,
-  'must be the reviewer who approved');
+  'action authority cannot change');
 
-SELECT pg_temp.expect_ok('action becomes approved with the right reviewer',
-  $q$UPDATE actions SET status='approved', approved_by='20000000-0000-0000-0000-000000000003' WHERE id='93000000-0000-0000-0000-000000000001'$q$);
+SELECT pg_temp.expect_value('recording approval promotes the action with the right reviewer',
+  $q$SELECT (status='approved' AND approved_by='20000000-0000-0000-0000-000000000003')::text
+      FROM actions WHERE id='93000000-0000-0000-0000-000000000001'$q$, 'true');
 
 SELECT pg_temp.expect_error('approved payload is frozen (amount change blocked)',
   $q$UPDATE actions SET amount = 48000 WHERE id='93000000-0000-0000-0000-000000000001'$q$,

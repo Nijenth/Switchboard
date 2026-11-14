@@ -47,13 +47,15 @@ class ApprovalDecisionInput(BaseModel):
         return self
 
 
-def _map_decision_error(error: Error) -> HTTPException:
+def _map_decision_error(error: Error, decision: str) -> HTTPException:
     message = (error.diag.message_primary or "").lower()
     if "approval request not found" in message:
         return HTTPException(404, "Approval request not found")
+    if "cannot satisfy required role" in message and decision == "approved":
+        return HTTPException(409, "Reviewer cannot satisfy the approval role")
     if "reviewer" in message or "cannot satisfy required role" in message:
         return HTTPException(403, "Reviewer is not authorized")
-    if "matching current eligibility evidence" in message:
+    if "matching current eligibility evidence" in message and decision == "edited":
         return HTTPException(
             409, "Order refund amount cannot be edited; amount is fixed by eligibility evidence"
         )
@@ -105,42 +107,6 @@ def approval_router(
                 ).fetchone()
                 assert row is not None
                 decision_id = row[0]
-                if body.decision == "approved":
-                    subject = conn.execute(
-                        """
-                        SELECT subject_type, subject_id
-                        FROM public.approval_requests
-                        WHERE tenant_id = %s AND id = %s
-                        """,
-                        (credential.tenant_id, request_id),
-                    ).fetchone()
-                    assert subject is not None
-                    subject_type, subject_id = subject
-                    if subject_type == "action":
-                        updated = conn.execute(
-                            """
-                            UPDATE public.actions
-                               SET status = 'approved', approved_by = %s
-                             WHERE tenant_id = %s AND id = %s
-                               AND status IN ('proposed', 'pending_approval')
-                            RETURNING id
-                            """,
-                            (credential.reviewer_id, credential.tenant_id, subject_id),
-                        ).fetchone()
-                        if updated is None:
-                            raise HTTPException(409, "Approval action is no longer pending")
-                    elif subject_type == "draft":
-                        updated = conn.execute(
-                            """
-                            UPDATE public.drafts
-                               SET status = 'approved'
-                             WHERE tenant_id = %s AND id = %s AND status = 'pending'
-                            RETURNING id
-                            """,
-                            (credential.tenant_id, subject_id),
-                        ).fetchone()
-                        if updated is None:
-                            raise HTTPException(409, "Approval draft is no longer pending")
                 return {
                     "decision_id": decision_id,
                     "request_id": request_id,
@@ -151,7 +117,7 @@ def approval_router(
         except DataError:
             raise HTTPException(422, "Invalid approval decision") from None
         except (IntegrityError, RaiseException) as error:
-            raise _map_decision_error(error) from None
+            raise _map_decision_error(error, body.decision) from None
         except (OperationalError, PoolTimeout, TooManyRequests):
             raise HTTPException(503, "Approval unavailable") from None
         except HTTPException:
