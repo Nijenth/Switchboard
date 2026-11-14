@@ -390,4 +390,8 @@ def execution_router(
             (credential.tenant_id,),
         )
 
+    @router.post("/approvals/expire-unclaimed")
+    def expire_unclaimed_approvals(credential: Annotated[Credential, Depends(poster)]) -> object:
+        return transition(credential, "SELECT public.cancel_unclaimed_approved_actions()", ())
+
     return router

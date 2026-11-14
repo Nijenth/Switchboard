@@ -1988,6 +1988,294 @@ def test_lookups_verify_identity_before_reading_order_data(
         assert events == (1,)
 
 
+def prepare_refund_message(
+    api: TestClient,
+    settings: Settings,
+    ingress: str,
+    lookup: str,
+    worker: str,
+    order: str,
+) -> dict[str, str]:
+    response = api.post(
+        "/ingest",
+        json={
+            **make_payload(SUPPORT),
+            "sender": {"address": "sofia.rossi@example.com"},
+            "body_text": f"Refund {order}",
+        },
+        headers=bearer(ingress),
+    )
+    assert response.status_code == 200
+    body = {key: response.json()[key] for key in ("case_id", "message_id")}
+    with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        set_northwind(conn)
+        conn.execute(
+            """INSERT INTO public.classifications
+                 (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
+               SELECT tenant_id,id,%s,pack_id,'returns_refunds','rules','normal',0.99
+               FROM public.cases WHERE tenant_id=%s AND id=%s""",
+            (body["message_id"], NORTHWIND, body["case_id"]),
+        )
+        conn.execute(
+            """INSERT INTO public.extractions
+                 (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,field_confidence,status)
+               SELECT tenant_id,id,%s,pack_id,'order_reference',1,%s,%s,'validated'
+               FROM public.cases WHERE tenant_id=%s AND id=%s""",
+            (
+                body["message_id"],
+                dumps({"order_number": order}),
+                '{"order_number":0.99}',
+                NORTHWIND,
+                body["case_id"],
+            ),
+        )
+    for tool, output in (
+        ("order_identity_check", {"order_found": True, "identity_verified": True}),
+        (
+            "order_refund_eligibility",
+            {
+                "eligible": True,
+                "reason": "eligible",
+                "refundable_amount": "32.00",
+                "currency": "EUR",
+            },
+        ),
+    ):
+        proposals = api.post("/lookups", json=body, headers=bearer(lookup))
+        assert proposals.status_code == 200, proposals.text
+        action_id = next(
+            a["action_id"] for a in proposals.json()["pending"] if a["tool_key"] == tool
+        )
+        grant = api.post(f"/actions/{action_id}/claim", headers=bearer(worker)).json()["grant"]
+        assert (
+            api.post(
+                f"/actions/{action_id}/consume",
+                headers=bearer(worker),
+                json={"grant": grant},
+            ).status_code
+            == 200
+        )
+        assert (
+            api.post(
+                f"/actions/{action_id}/complete",
+                headers=bearer(worker),
+                json={"grant": grant, "external_ref": str(uuid4()), "output": output},
+            ).status_code
+            == 200
+        )
+    return body
+
+
+@pytest.mark.parametrize(("channel", "claim"), [("api", False), ("slack", False), ("api", True)])
+def test_approved_refund_claim_window(
+    settings: Settings, credentials: dict[str, str], channel: str, claim: bool
+) -> None:
+    reviewer = uuid4()
+    lookup, worker, poster, refund, review = (token_hex(32) for _ in range(5))
+    config = replace(
+        settings,
+        lookup_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": lookup}]),
+        refund_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": refund}]),
+        execution_credentials=dumps(
+            [
+                {"tenant_id": str(NORTHWIND), "role": role, "principal": role, "token": token}
+                for role, token in (("worker", worker), ("approval_poster", poster))
+            ]
+        ),
+        approval_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "reviewer_id": str(reviewer),
+                    "channel": "api",
+                    "token": review,
+                }
+            ]
+        ),
+    )
+    workspace, slack_user, slack_channel = "TCLAIMWINDOW", "UCLAIMWINDOW", "CCLAIMWINDOW"
+    order = f"NW-{uuid4().int}"
+    watchdog = "/actions/approvals/expire-unclaimed"
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_config_loader",
+        password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+        connect_timeout=3,
+    ) as loader:
+        with loader.transaction():
+            verify_cluster(loader, "switchboard_config_loader")
+            previous = loader.execute(
+                """SELECT s.approval_claim_window_minutes,s.slack_workspace_id,q.notify_channel
+                     FROM public.tenant_settings s JOIN public.queues q USING (tenant_id)
+                    WHERE s.tenant_id=%s AND q.key='customer_support'""",
+                (NORTHWIND,),
+            ).fetchone()
+            assert previous is not None
+            loader.execute(
+                """UPDATE public.tenant_settings
+                      SET approval_claim_window_minutes=5,slack_workspace_id=%s WHERE tenant_id=%s""",
+                (workspace, NORTHWIND),
+            )
+            loader.execute(
+                """UPDATE public.queues SET notify_channel=%s
+                    WHERE tenant_id=%s AND key='customer_support'""",
+                (slack_channel, NORTHWIND),
+            )
+            loader.execute(
+                """INSERT INTO public.staff_users (id,tenant_id,email,name,role,slack_user_id)
+                   VALUES (%s,%s,%s,'Fixture Manager','manager',%s)""",
+                (reviewer, NORTHWIND, f"{reviewer}@example.test", slack_user),
+            )
+        try:
+            with TestClient(create_app(config)) as api:
+                first = prepare_refund_message(
+                    api, settings, credentials[SUPPORT], lookup, worker, order
+                )
+                proposal = api.post("/refunds/propose", json=first, headers=bearer(refund))
+                assert proposal.status_code == 200, proposal.text
+                action_id, approval_id = (
+                    proposal.json()[key] for key in ("action_id", "approval_id")
+                )
+                action = f"/actions/{action_id}"
+                if channel == "slack":
+                    ts = f"{int(time())}.123456"
+                    posted = api.post(
+                        f"/actions/approvals/{approval_id}/notification",
+                        headers=bearer(poster),
+                        json={"channel": slack_channel, "ts": ts},
+                    )
+                    assert posted.status_code == 200, posted.text
+                    payload = {
+                        "type": "block_actions",
+                        "api_app_id": settings.slack_app_id,
+                        "team": {"id": workspace},
+                        "user": {"id": slack_user},
+                        "container": {
+                            "type": "message",
+                            "channel_id": slack_channel,
+                            "message_ts": ts,
+                        },
+                        "actions": [
+                            {
+                                "type": "button",
+                                "action_id": "switchboard_approve",
+                                "value": approval_id,
+                            }
+                        ],
+                    }
+                    body = urlencode({"payload": dumps(payload)}).encode()
+                    stamp = str(int(time()))
+                    secret = settings.slack_signing_secret
+                    assert secret is not None
+                    sig = digest(secret.encode(), b"v0:" + stamp.encode() + b":" + body, "sha256")
+                    approved = api.post(
+                        "/approvals/slack",
+                        content=body,
+                        headers={
+                            "X-Slack-Request-Timestamp": stamp,
+                            "X-Slack-Signature": f"v0={sig.hex()}",
+                        },
+                    )
+                else:
+                    approved = api.post(
+                        f"/approvals/{approval_id}/decide",
+                        headers=bearer(review),
+                        json={"decision": "approved"},
+                    )
+                assert approved.status_code == 200, approved.text
+
+                assert api.post(watchdog, headers=bearer(worker)).status_code == 403
+                assert api.post(watchdog, headers=bearer(poster)).json() == 0
+                grant = token_hex(32)
+                if claim:
+                    claimed = api.post(action + "/claim", headers=bearer(worker))
+                    assert claimed.status_code == 200, claimed.text
+                    grant = claimed.json()["grant"]
+                with psycopg.connect(
+                    host=settings.db_host,
+                    port=settings.db_port,
+                    dbname=settings.db_name,
+                    user="switchboard_owner",
+                    password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+                    connect_timeout=3,
+                ) as owner:
+                    verify_cluster(owner, "switchboard_owner")
+                    owner.execute("SELECT set_config('app.tenant_id',%s,true)", (str(NORTHWIND),))
+                    aged = owner.execute(
+                        """UPDATE public.approval_requests
+                              SET resolved_at=clock_timestamp()-interval '6 minutes'
+                            WHERE tenant_id=%s AND id=%s AND status='approved'""",
+                        (NORTHWIND, approval_id),
+                    )
+                    assert aged.rowcount == 1
+
+                if not claim:
+                    # The database rejects a late claim even before the watchdog runs.
+                    assert api.post(action + "/claim", headers=bearer(worker)).status_code == 409
+                cancelled = api.post(watchdog, headers=bearer(poster))
+                assert cancelled.status_code == 200, cancelled.text
+                assert cancelled.json() == (0 if claim else 1)
+                assert api.post(watchdog, headers=bearer(poster)).json() == 0
+                with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                    verify_cluster(conn, "switchboard_core")
+                    set_northwind(conn)
+                    assert conn.execute(
+                        """SELECT a.status,r.status,l.trace_id=a.trace_id,l.details->>'reason'
+                             FROM public.actions a
+                             JOIN public.approval_requests r ON (r.tenant_id,r.subject_id)=(a.tenant_id,a.id)
+                             LEFT JOIN public.audit_log l ON (l.tenant_id,l.entity_id)=(a.tenant_id,a.id)
+                               AND l.event_type='action.cancelled'
+                               AND l.details->>'approval_request_id'=r.id::text
+                            WHERE a.tenant_id=%s AND a.id=%s AND r.id=%s""",
+                        (NORTHWIND, action_id, approval_id),
+                    ).fetchall() == [
+                        ("executing", "approved", None, None)
+                        if claim
+                        else ("cancelled", "approved", True, "approval_claim_window_elapsed")
+                    ]
+                if claim:
+                    assert (
+                        api.post(
+                            action + "/consume", headers=bearer(worker), json={"grant": grant}
+                        ).status_code
+                        == 200
+                    )
+                else:
+                    assert api.post(action + "/claim", headers=bearer(worker)).status_code == 409
+                    assert (
+                        api.post(
+                            action + "/consume", headers=bearer(worker), json={"grant": grant}
+                        ).status_code
+                        == 409
+                    )
+                    follow_up = prepare_refund_message(
+                        api, settings, credentials[SUPPORT], lookup, worker, order
+                    )
+                    fresh = api.post("/refunds/propose", json=follow_up, headers=bearer(refund))
+                    assert fresh.status_code == 200, fresh.text
+                    assert fresh.json()["status"] == "pending_approval"
+                    assert fresh.json()["action_id"] != action_id
+        finally:
+            with loader.transaction():
+                loader.execute(
+                    """UPDATE public.tenant_settings SET approval_claim_window_minutes=%s,
+                              slack_workspace_id=%s WHERE tenant_id=%s""",
+                    (previous[0], previous[1], NORTHWIND),
+                )
+                loader.execute(
+                    """UPDATE public.queues SET notify_channel=%s
+                        WHERE tenant_id=%s AND key='customer_support'""",
+                    (previous[2], NORTHWIND),
+                )
+                loader.execute(
+                    "UPDATE public.staff_users SET slack_user_id=NULL WHERE tenant_id=%s AND id=%s",
+                    (NORTHWIND, reviewer),
+                )
+
+
 def test_refund_approval_expiry_and_edited_amount_refusal(
     settings: Settings, credentials: dict[str, str]
 ) -> None:
@@ -2033,7 +2321,6 @@ def test_refund_approval_expiry_and_edited_amount_refusal(
     workspace = "T000REFEXP"
     slack_user = "U000MARCO"
     order = "NW-1099"
-    sender = "sofia.rossi@example.com"
 
     with psycopg.connect(
         host=settings.db_host,
@@ -2074,81 +2361,9 @@ def test_refund_approval_expiry_and_edited_amount_refusal(
 
     try:
         with TestClient(create_app(config)) as api:
-
-            def ingest_and_prepare() -> dict[str, str]:
-                response = api.post(
-                    "/ingest",
-                    json={
-                        **make_payload(SUPPORT),
-                        "sender": {"address": sender},
-                        "body_text": f"Refund {order}",
-                    },
-                    headers=bearer(credentials[SUPPORT]),
-                )
-                assert response.status_code == 200
-                body = {key: response.json()[key] for key in ("case_id", "message_id")}
-                with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
-                    verify_cluster(conn, "switchboard_core")
-                    set_northwind(conn)
-                    conn.execute(
-                        """INSERT INTO public.classifications
-                             (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
-                           SELECT tenant_id,id,%s,pack_id,'returns_refunds','rules','normal',0.99
-                           FROM public.cases WHERE tenant_id=%s AND id=%s""",
-                        (body["message_id"], NORTHWIND, body["case_id"]),
-                    )
-                    conn.execute(
-                        """INSERT INTO public.extractions
-                             (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,field_confidence,status)
-                           SELECT tenant_id,id,%s,pack_id,'order_reference',1,%s,%s,'validated'
-                           FROM public.cases WHERE tenant_id=%s AND id=%s""",
-                        (
-                            body["message_id"],
-                            dumps({"order_number": order}),
-                            '{"order_number":0.99}',
-                            NORTHWIND,
-                            body["case_id"],
-                        ),
-                    )
-                for tool, output in (
-                    ("order_identity_check", {"order_found": True, "identity_verified": True}),
-                    (
-                        "order_refund_eligibility",
-                        {
-                            "eligible": True,
-                            "reason": "eligible",
-                            "refundable_amount": "32.00",
-                            "currency": "EUR",
-                        },
-                    ),
-                ):
-                    proposals = api.post("/lookups", json=body, headers=bearer(lookup))
-                    assert proposals.status_code == 200, proposals.text
-                    action_id = next(
-                        a["action_id"] for a in proposals.json()["pending"] if a["tool_key"] == tool
-                    )
-                    grant = api.post(f"/actions/{action_id}/claim", headers=bearer(worker)).json()[
-                        "grant"
-                    ]
-                    assert (
-                        api.post(
-                            f"/actions/{action_id}/consume",
-                            headers=bearer(worker),
-                            json={"grant": grant},
-                        ).status_code
-                        == 200
-                    )
-                    assert (
-                        api.post(
-                            f"/actions/{action_id}/complete",
-                            headers=bearer(worker),
-                            json={"grant": grant, "external_ref": str(uuid4()), "output": output},
-                        ).status_code
-                        == 200
-                    )
-                return body
-
-            first_msg = ingest_and_prepare()
+            first_msg = prepare_refund_message(
+                api, settings, credentials[SUPPORT], lookup, worker, order
+            )
             first_refund = api.post("/refunds/propose", json=first_msg, headers=bearer(refund))
             assert first_refund.status_code == 200, first_refund.text
             proposed = first_refund.json()
@@ -2266,7 +2481,9 @@ def test_refund_approval_expiry_and_edited_amount_refusal(
             assert late_slack.status_code == 409
 
             # Order is released: a second message for the same order can propose a fresh refund.
-            second_msg = ingest_and_prepare()
+            second_msg = prepare_refund_message(
+                api, settings, credentials[SUPPORT], lookup, worker, order
+            )
             second_refund = api.post("/refunds/propose", json=second_msg, headers=bearer(refund))
             assert second_refund.status_code == 200, second_refund.text
             fresh = second_refund.json()
