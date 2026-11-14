@@ -76,6 +76,69 @@ SELECT pg_temp.expect_value('a rejected Slack refund cannot claim execution',
   $q$SELECT (status='rejected' AND public.claim_mock_action(id,'fixture',sha256('rejected'::bytea)) IS NULL)::text
        FROM actions WHERE idempotency_key='rejected-refund'$q$, 'true');
 ROLLBACK TO SAVEPOINT rejected_refund;
+SAVEPOINT expired_refund;
+UPDATE tenant_settings SET slack_workspace_id = 'T000REFUND'
+ WHERE tenant_id = '10000000-0000-0000-0000-000000000001';
+SELECT pg_temp.propose_fixture_refund('expired-refund','25.00') \g /dev/null
+INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,reason,slack_channel,slack_message_ts)
+SELECT tenant_id,case_id,'action',id,'Review fixture refund','C-DEMO-SUPPORT','10.123456'
+  FROM actions WHERE idempotency_key='expired-refund';
+SELECT pg_temp.expect_error('pending refund blocks parallel refund before expiry',
+  $q$SELECT pg_temp.propose_fixture_refund('blocked-while-pending','25.00')$q$, 'actions_one_live_order_money');
+UPDATE approval_requests SET sla_due_at = clock_timestamp() - interval '1 second'
+ WHERE subject_type='action' AND subject_id=(SELECT id FROM actions WHERE idempotency_key='expired-refund');
+SELECT pg_temp.expect_error('late Slack approval past SLA is refused before watchdog runs',
+  $q$SELECT public.record_slack_approval(r.id,'T000REFUND','U-DEMO-MARCO','C-DEMO-SUPPORT','10.123456','approved')
+       FROM approval_requests r JOIN actions a ON a.id=r.subject_id
+      WHERE a.idempotency_key='expired-refund'$q$, 'already resolved or past its SLA');
+SELECT pg_temp.expect_value('expire_approval_request expires pending refund approval',
+  $q$SELECT public.expire_approval_request(r.id)::text
+       FROM approval_requests r JOIN actions a ON a.id=r.subject_id
+      WHERE a.idempotency_key='expired-refund'$q$, 'true');
+SELECT pg_temp.expect_value('expiring refund approval cancels action and logs audit',
+  $q$SELECT (
+       r.status = 'expired'
+       AND a.status = 'cancelled'
+       AND EXISTS (SELECT 1 FROM audit_log WHERE entity_type='approval_request' AND entity_id=r.id AND event_type='approval.expired')
+       AND EXISTS (
+         SELECT 1 FROM audit_log l
+          WHERE l.entity_type='action' AND l.entity_id=a.id AND l.event_type='action.cancelled'
+            AND l.trace_id=a.trace_id AND l.details->>'reason'='approval_expired'
+            AND l.details->>'approval_request_id'=r.id::text
+       )
+     )::text
+       FROM approval_requests r JOIN actions a ON a.id=r.subject_id
+      WHERE a.idempotency_key='expired-refund'$q$, 'true');
+SELECT pg_temp.expect_error('late Slack approval after expiry is refused',
+  $q$SELECT public.record_slack_approval(r.id,'T000REFUND','U-DEMO-MARCO','C-DEMO-SUPPORT','10.123456','approved')
+       FROM approval_requests r JOIN actions a ON a.id=r.subject_id
+      WHERE a.idempotency_key='expired-refund'$q$, 'already resolved or past its SLA');
+SELECT pg_temp.expect_value('an expired refund can never be claimed or consumed',
+  $q$SELECT (
+       status='cancelled'
+       AND public.claim_mock_action(id,'fixture',sha256('expired'::bytea)) IS NULL
+       AND public.consume_mock_grant(id,'fixture',sha256('expired'::bytea)) IS NULL
+     )::text
+       FROM actions WHERE idempotency_key='expired-refund'$q$, 'true');
+SELECT pg_temp.propose_fixture_refund('fresh-after-expiry','25.00') \g /dev/null
+SELECT pg_temp.expect_value('expired refund releases order for a fresh refund proposal',
+  $q$SELECT (status='pending_approval' AND amount=25.00)::text
+       FROM actions WHERE idempotency_key='fresh-after-expiry'$q$, 'true');
+ROLLBACK TO SAVEPOINT expired_refund;
+SAVEPOINT edited_refund;
+SELECT pg_temp.propose_fixture_refund('edited-refund','25.00') \g /dev/null
+INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
+SELECT tenant_id,case_id,'action',id,'Review fixture refund'
+  FROM actions WHERE idempotency_key='edited-refund';
+SELECT pg_temp.expect_error('edited refund amount is refused by eligibility check',
+  $q$SELECT public.record_approval_decision(r.id,'20000000-0000-0000-0000-000000000002','edited','api','{"amount":10.00}')
+       FROM approval_requests r JOIN actions a ON a.id=r.subject_id
+      WHERE a.idempotency_key='edited-refund'$q$, 'matching current eligibility evidence');
+SELECT pg_temp.expect_value('original refund stays pending after refused edit',
+  $q$SELECT (a.status='pending_approval' AND a.amount=25.00 AND r.status='pending')::text
+       FROM actions a JOIN approval_requests r ON r.subject_id=a.id
+      WHERE a.idempotency_key='edited-refund'$q$, 'true');
+ROLLBACK TO SAVEPOINT edited_refund;
 SELECT pg_temp.expect_error('verified order cannot authorize a different order',
   $q$SELECT pg_temp.propose_fixture_refund('different-order','25.00','NW-1010')$q$,
   'requires verified identity for the same message and order');

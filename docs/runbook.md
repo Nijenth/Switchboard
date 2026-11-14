@@ -77,8 +77,11 @@ claim or consume can mean a newer eligibility result revoked authority. A lost c
 after payout leaves the action executing until the lease expires. Run the reconciler
 to check the mock receipt and record the result. Keep ambiguous refunds in reconciliation
 and use the existing 30-second grace period before declaring a missing receipt.
-An expired refund approval cannot be approved. Review the pending action before
-cancelling it and starting a new refund request.
+An expired refund approval cannot be approved. Running `POST /actions/approvals/expire`
+(or `public.expire_approval_request`) marks the request `expired`, cancels the pending
+refund action, releases the per-order live lock, and lets a fresh inbound message propose
+a new refund. Reviewer edits that change a refund amount or currency are refused with
+`409`, leaving the original request pending.
 
 ## Offline drafting
 

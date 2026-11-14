@@ -28,4 +28,5 @@ Run migration 024 and publish the catalog before enabling the new workflow expor
 Bind the proposal node to a separate tenant-scoped Header Auth credential. For the
 demo, provision fresh fixtures through `scripts/seed`. The workflow executes only the
 mock adapter. A real payment integration will need its own idempotency and reconciliation
-contract.
+contract. See [ADR 0025](0025-expire-action-approvals-and-refund-limits.md) for the full
+inventory of locks and limits introduced in 024/025 and how each blocked state exits.
