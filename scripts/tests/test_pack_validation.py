@@ -39,6 +39,9 @@ def test_all_released_packs_validate() -> None:
         ("pack.yaml", "lookup_input_mismatch", "inputs must match its input schema"),
         ("pack.yaml", "lookup_duplicate", "duplicate lookup"),
         ("pack.yaml", "lookup_bad_source_syntax", "invalid pack structure"),
+        ("pack.yaml", "evidence_unknown_field", "evidence uses unknown fields"),
+        ("pack.yaml", "evidence_quotes_message", "evidence cannot quote message fields"),
+        ("pack.yaml", "evidence_too_long", "invalid pack structure"),
         ("tools.yaml", "unknown_tool", "unknown tool"),
         ("tools.yaml", "missing_approval", "requires approval"),
         ("tools.yaml", "threshold_bypass", "requires approval"),
@@ -84,6 +87,12 @@ def test_catalog_refuses_invalid_fixture(
             data["lookups"].append(data["lookups"][0])
         case "lookup_bad_source_syntax":
             data["lookups"][1]["input"]["order_number"] = "case.id"
+        case "evidence_unknown_field":
+            data["lookups"][1]["evidence"] = "Order {order_number} costs {price}."
+        case "evidence_quotes_message":
+            data["lookups"][0]["evidence"] = "We emailed {sender_email}."
+        case "evidence_too_long":
+            data["lookups"][1]["evidence"] = "x" * 301
         case "unknown_tool":
             data["tools"][0]["key"] = "unregistered"
         case "missing_approval" | "threshold_bypass":

@@ -1356,6 +1356,27 @@ def test_late_mock_send_after_lease_expiry_has_no_effect(settings: Settings) -> 
         assert receipts() == 1
 
 
+def draft_from_order_lookup(
+    api: TestClient, settings: Settings, body: dict[str, str], headers: dict[str, str]
+) -> UUID:
+    """Draft a reply for an order-status message whose lookups have completed."""
+    response = api.post("/drafts", json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["guardrails"] == dict.fromkeys(
+        ("g6_passed", "g7_passed", "pii_safe", "policy_ok", "tone_ok"), True
+    )
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        decision = conn.execute(
+            "SELECT decision,rule_id FROM public.policy_decisions WHERE tenant_id=%s AND id=%s",
+            (NORTHWIND, result["decision_id"]),
+        ).fetchone()
+    assert decision == ("auto", "ORDER_STATUS")
+    assert result["status"] == "approved", result
+    return UUID(str(result["draft_id"]))
+
+
 def test_lookups_verify_identity_before_reading_order_data(
     client: TestClient, credentials: dict[str, str], settings: Settings
 ) -> None:
@@ -1370,7 +1391,7 @@ def test_lookups_verify_identity_before_reading_order_data(
         created = client.post("/ingest", json=delivery, headers=bearer(credentials[SUPPORT]))
         assert created.status_code == 200, created.text
         body = {key: created.json()[key] for key in ("case_id", "message_id")}
-        # Store the validated extraction that /understand would record for this message.
+        # Store what /understand would record for this message.
         with (
             create_pool(settings, max_size=1) as pool,
             pool.connection() as conn,
@@ -1378,6 +1399,14 @@ def test_lookups_verify_identity_before_reading_order_data(
         ):
             verify_cluster(conn, "switchboard_core")
             conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+            # /understand stores the classification before the extraction it validates.
+            conn.execute(
+                """INSERT INTO public.classifications
+                  (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
+                   SELECT tenant_id,id,%s,pack_id,'order_status','rules','normal',0.99
+                   FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                (body["message_id"], NORTHWIND, body["case_id"]),
+            )
             conn.execute(
                 """
                 INSERT INTO public.extractions
@@ -1395,9 +1424,11 @@ def test_lookups_verify_identity_before_reading_order_data(
         return body
 
     lookup_token, worker_token, decide_token = token_hex(32), token_hex(32), token_hex(32)
+    draft_token = token_hex(32)
     config = replace(
         settings,
         lookup_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": lookup_token}]),
+        draft_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": draft_token}]),
         decide_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": decide_token}]),
         execution_credentials=dumps(
             [
@@ -1459,9 +1490,10 @@ def test_lookups_verify_identity_before_reading_order_data(
         second = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert second["completed"] == ["order_identity_check"]
         assert [item["tool_key"] for item in second["pending"]] == ["order_lookup"]
+        lookup_action = second["pending"][0]["action_id"]
         dispatch = run(
             api,
-            second["pending"][0]["action_id"],
+            lookup_action,
             {
                 "order_status": "shipped",
                 "carrier": "UPS",
@@ -1477,6 +1509,9 @@ def test_lookups_verify_identity_before_reading_order_data(
         )
         decided = api.post("/decide", json=body, headers=bearer(decide_token))
         assert decided.status_code == 200, decided.text
+        draft = None
+        if settings.offline_gateway_url:
+            draft = draft_from_order_lookup(api, settings, body, bearer(draft_token))
 
         # A sender who does not own the order never unlocks the order lookup.
         stranger = ingest_with_order("stranger@example.test")
@@ -1498,6 +1533,21 @@ def test_lookups_verify_identity_before_reading_order_data(
             (NORTHWIND, body["case_id"], stranger["case_id"]),
         ).fetchall()
         assert dict(verified) == {UUID(body["case_id"]): True, UUID(stranger["case_id"]): False}
+        if draft is not None:
+            # ADR 0020: the automatic reply quotes the verified lookup and cites its action.
+            text, citations = conn.execute(
+                "SELECT body,citations FROM public.drafts WHERE tenant_id=%s AND id=%s",
+                (NORTHWIND, draft),
+            ).fetchone() or (None, None)
+            assert text == (
+                "Your order NW-1001 is shipped with UPS, tracking number 1Z999AA10123456784."
+            )
+            assert citations == [{"type": "tool", "action_id": str(lookup_action)}]
+            assert conn.execute(
+                "SELECT tool_key FROM public.actions WHERE tenant_id=%s AND id=%s",
+                (NORTHWIND, lookup_action),
+            ).fetchone() == ("order_lookup",)
+
         row = conn.execute(
             """SELECT inputs->'checks' FROM public.policy_decisions
                WHERE tenant_id=%s AND case_id=%s AND message_id=%s""",

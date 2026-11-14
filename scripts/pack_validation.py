@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,6 +169,12 @@ def check_lookups(
                 raise PackError(f"{label}: unknown lookup source {source}")
         # Lookup results merge into flat checks.* fields, so names must not collide.
         produced = set(tool["output_schema"].get("properties", {}))
+        placeholders = set(re.findall(r"\{([^{}]*)\}", entry.get("evidence", "")))
+        if not placeholders <= expected | produced:
+            raise PackError(f"{label}: {key} evidence uses unknown fields")
+        # Evidence is quoted to the customer, so it never repeats message-derived inputs.
+        if any(entry["input"].get(name, "").startswith("message.") for name in placeholders):
+            raise PackError(f"{label}: {key} evidence cannot quote message fields")
         if produced & outputs:
             raise PackError(f"{label}: {key} output fields collide with an earlier lookup")
         outputs |= produced
