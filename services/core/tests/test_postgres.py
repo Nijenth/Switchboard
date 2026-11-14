@@ -4,8 +4,9 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from hmac import digest
-from json import dumps
+from json import dumps, loads
 from os import environ
+from pathlib import Path
 from queue import Queue
 from secrets import token_hex
 from threading import Barrier
@@ -1296,3 +1297,60 @@ def test_audit_checkpoint_api_checks_previous_hash(settings: Settings) -> None:
             "/audit/verify", json={**head, "row_hash": "0" * 64}, headers=bearer(token)
         )
         assert mismatch.status_code == 409
+
+
+def test_late_mock_send_after_lease_expiry_has_no_effect(settings: Settings) -> None:
+    """AGENTS.md §12 "external API timeout": a send that finishes after its lease ends.
+
+    Runs the exact SQL of the mock connector node in wf_tool_send_reply as the n8n mock login.
+    A write that lands after the grant expired must create nothing, so the reconciler's
+    "absent" evidence stays true; a write within the lease is idempotent.
+    """
+    workflow = loads(
+        (Path(__file__).resolve().parents[3] / "workflows" / "wf_tool_send_reply.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    (query,) = [
+        node["parameters"]["query"]
+        for node in workflow["nodes"]
+        if node["name"] == "Write mock send receipt"
+    ]
+    action, key = uuid4(), f"draft-send:{uuid4()}"
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_n8n_mock",
+        password=environ["SWITCHBOARD_N8N_MOCK_PASSWORD"],
+        connect_timeout=3,
+        autocommit=True,
+        cursor_factory=psycopg.ClientCursor,
+    ) as conn:
+        verify_cluster(conn, "switchboard_n8n_mock")
+        conn.execute("PREPARE mock_send AS " + query)
+
+        def send(idempotency_key: str, expires_at: datetime) -> list[tuple[object, ...]]:
+            return conn.execute(
+                "EXECUTE mock_send(%s, %s, %s, %s)",
+                (NORTHWIND, action, idempotency_key, expires_at),
+            ).fetchall()
+
+        def receipts() -> int:
+            row = conn.execute(
+                "SELECT count(*) FROM demo.outbound_receipts WHERE tenant_id=%s AND action_id=%s",
+                (NORTHWIND, action),
+            ).fetchone()
+            assert row is not None
+            return int(row[0])
+
+        assert send(key, expired) == []
+        assert receipts() == 0
+        live = datetime.now(UTC) + timedelta(minutes=1)
+        first = send(key, live)
+        assert len(first) == 1
+        assert send(key, live) == first
+        assert send(key, expired) == first
+        assert send(f"draft-send:{uuid4()}", live) == []
+        assert receipts() == 1
