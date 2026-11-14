@@ -155,18 +155,31 @@ def publish(
         ):
             label["confidence"] = None
     label["flags"] = [flag for (flag,) in flags]
-    # Results of completed read lookups for this message become checks.* (ADR 0019).
+    # Results of completed read lookups for this message become checks.* (ADR 0019, ADR 0021).
     checks: dict[str, Any] = {}
     for (output,) in conn.execute(
         """
-        SELECT output FROM public.actions
-        WHERE tenant_id=%s AND case_id=%s AND message_id=%s AND risk_level='read'
-          AND status='executed' AND jsonb_typeof(output)='object'
-        ORDER BY executed_at, id
+        SELECT a.output FROM public.actions a
+        WHERE a.tenant_id=%s AND a.case_id=%s AND a.message_id=%s AND a.risk_level='read'
+          AND a.status='executed' AND jsonb_typeof(a.output)='object'
+          AND (a.tool_key <> 'order_lookup' OR public.order_identity_is_verified(a))
+        ORDER BY a.executed_at, a.id
         """,
         message_scope[:3],
     ):
         checks.update(output)
+    extraction_data = extracted[1] if extracted and isinstance(extracted[1], dict) else {}
+    order_number = extraction_data.get("order_number")
+    if "order_identity_check" in tools:
+        verified = bool(
+            verified
+            and isinstance(order_number, str)
+            and conn.execute(
+                "SELECT public.order_identity_is_verified(%s,%s,%s,%s)",
+                (tenant, payload.case_id, payload.message_id, order_number),
+            ).fetchone()
+            == (True,)
+        )
     context = {
         "case": {
             "id": str(payload.case_id),
@@ -180,7 +193,7 @@ def publish(
         if contact_id
         else {},
         "classification": label,
-        "extraction": extracted[1] if extracted else {},
+        "extraction": extraction_data,
         "field_confidence": extracted[2] if extracted else {},
         "extraction_valid": (
             extracted is not None

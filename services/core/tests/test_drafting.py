@@ -84,3 +84,41 @@ def test_order_numbers_need_a_cited_tool_result(
     if pii_safe:
         assert checks["g6_passed"] and checks["g7_passed"]
         assert verified == [{"type": "tool", "action_id": "a1"}]
+
+
+def test_strict_schema_numeric_tracking_number_is_not_redacted_as_card() -> None:
+    template = (
+        "Your order {order_number} is {order_status} with {carrier}, "
+        "tracking number {tracking_number}."
+    )
+    schemas: dict[str, object] = {
+        "order_number": {"type": "string", "pattern": "^NW-[0-9]+$"},
+        "order_status": {"enum": ["shipped", "delivered", None]},
+        "carrier": {"type": ["string", "null"], "pattern": "^[A-Za-z]{2,20}$"},
+        "tracking_number": {"type": ["string", "null"], "pattern": "^[A-Z0-9]{6,32}$"},
+    }
+    values: dict[str, object] = {
+        "order_number": "NW-1004",
+        "order_status": "delivered",
+        "carrier": "FedEx",
+        "tracking_number": "771200000000004",
+    }
+    evidence = render_evidence(template, values, schemas=schemas)
+    assert evidence == (
+        "Your order NW-1004 is delivered with FedEx, tracking number 771200000000004."
+    )
+    verified, checks = assess(
+        evidence, ["tool:nw1004"], {"tool:nw1004": evidence}, "arjun.mehta@example.com"
+    )
+    assert checks == dict.fromkeys(
+        ("g6_passed", "g7_passed", "pii_safe", "policy_ok", "tone_ok"), True
+    )
+    assert verified == [{"type": "tool", "action_id": "nw1004"}]
+
+    # Without a cited tool source, a 15-digit number is still blocked as a card number.
+    _, chunk_checks = assess(evidence, ["chunk"], {"chunk": evidence}, "arjun.mehta@example.com")
+    assert chunk_checks["pii_safe"] is False
+
+    # Without strict schema constraints, a 15-digit number is redacted to [CARD].
+    unconstrained = render_evidence(template, values)
+    assert unconstrained is not None and "[CARD]" in unconstrained

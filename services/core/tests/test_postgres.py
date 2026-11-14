@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from psycopg import Connection
 
 from app.adapters.db import Settings, create_pool
+from app.api.drafts import DraftInput, lookup_evidence
 from app.main import create_app
 
 NORTHWIND = UUID("10000000-0000-0000-0000-000000000001")
@@ -1066,15 +1067,28 @@ def test_mock_execution_grants_and_reconciliation(settings: Settings) -> None:
         ),
     )
     action_ids = [uuid4(), uuid4(), uuid4()]
+    decision_id = uuid4()
     with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
         set_northwind(conn)
+        conn.execute(
+            """
+            INSERT INTO public.policy_decisions (
+                id, tenant_id, case_id, pack_id, trace_id, decision, rule_id, rule_source,
+                reason, policy_version, allowed_tools
+            ) SELECT %s, tenant_id, id, pack_id, %s, 'auto', 'fixture', 'pack',
+                     'Fixture allow', '1', ARRAY['invoice_post_to_accounting']
+            FROM public.cases WHERE tenant_id=%s AND id=%s
+            """,
+            (decision_id, uuid4(), NORTHWIND, CASE_ID),
+        )
         for action_id in action_ids:
             conn.execute(
                 """
-                INSERT INTO public.actions (id, tenant_id, case_id, trace_id, idempotency_key,
-                    tool_key, risk_level, status) VALUES (%s,%s,%s,%s,%s,'po_lookup','read','proposed')
+                INSERT INTO public.actions (id, tenant_id, case_id, policy_decision_id, trace_id,
+                    idempotency_key, tool_key, risk_level, status)
+                VALUES (%s,%s,%s,%s,%s,%s,'invoice_post_to_accounting','write','proposed')
                 """,
-                (action_id, NORTHWIND, CASE_ID, uuid4(), str(action_id)),
+                (action_id, NORTHWIND, CASE_ID, decision_id, uuid4(), str(action_id)),
             )
         with (
             pytest.raises(psycopg.errors.InsufficientPrivilege, match="controlled transition"),
@@ -1380,14 +1394,18 @@ def draft_from_order_lookup(
 def test_lookups_verify_identity_before_reading_order_data(
     client: TestClient, credentials: dict[str, str], settings: Settings
 ) -> None:
-    """ADR 0019: pack lookups run in order, and order data needs a verified identity first."""
+    """ADR 0019, ADR 0021: lookups require per-message, per-order verified identity."""
 
-    def ingest_with_order(sender: str) -> dict[str, str]:
+    def ingest_with_order(
+        sender: str, order_number: str = "NW-1001", thread_id: str | None = None
+    ) -> dict[str, str]:
         delivery = {
             **make_payload(SUPPORT),
             "sender": {"address": sender},
-            "body_text": "Where is my order NW-1001?",
+            "body_text": f"Where is my order {order_number}?",
         }
+        if thread_id is not None:
+            delivery["external_thread_id"] = thread_id
         created = client.post("/ingest", json=delivery, headers=bearer(credentials[SUPPORT]))
         assert created.status_code == 200, created.text
         body = {key: created.json()[key] for key in ("case_id", "message_id")}
@@ -1416,7 +1434,7 @@ def test_lookups_verify_identity_before_reading_order_data(
                 """,
                 (
                     body["message_id"],
-                    dumps({"order_number": "NW-1001"}),
+                    dumps({"order_number": order_number}),
                     NORTHWIND,
                     body["case_id"],
                 ),
@@ -1458,8 +1476,9 @@ def test_lookups_verify_identity_before_reading_order_data(
         dispatch: dict[str, object] = consumed.json()
         return dispatch
 
+    thread_id = f"thread-{uuid4()}"
     with TestClient(create_app(config)) as api:
-        body = ingest_with_order("emma.jones@example.com")
+        body = ingest_with_order("emma.jones@example.com", "NW-1001", thread_id=thread_id)
         assert api.post("/lookups", json=body, headers=bearer(token_hex(32))).status_code == 403
         first = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert [item["tool_key"] for item in first["pending"]] == ["order_identity_check"]
@@ -1467,15 +1486,41 @@ def test_lookups_verify_identity_before_reading_order_data(
         check = first["pending"][0]["action_id"]
         assert api.post("/lookups", json=body, headers=bearer(lookup_token)).json() == first
 
-        # A result that does not match the registry output schema is refused.
+        # Read actions cannot complete without output or with order_found=false & identity_verified=true.
         claimed = api.post(f"/actions/{check}/claim", headers=worker).json()
         api.post(f"/actions/{check}/consume", headers=worker, json={"grant": claimed["grant"]})
-        invalid = api.post(
-            f"/actions/{check}/complete",
-            headers=worker,
-            json={"grant": claimed["grant"], "external_ref": "x", "output": {"order_found": True}},
+        assert (
+            api.post(
+                f"/actions/{check}/complete",
+                headers=worker,
+                json={"grant": claimed["grant"], "external_ref": "x"},
+            ).status_code
+            == 422
         )
-        assert invalid.status_code == 422
+        assert (
+            api.post(
+                f"/actions/{check}/complete",
+                headers=worker,
+                json={
+                    "grant": claimed["grant"],
+                    "external_ref": "x",
+                    "output": {"order_found": True},
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            api.post(
+                f"/actions/{check}/complete",
+                headers=worker,
+                json={
+                    "grant": claimed["grant"],
+                    "external_ref": "x",
+                    "output": {"order_found": False, "identity_verified": True},
+                },
+            ).status_code
+            == 422
+        )
         completed = api.post(
             f"/actions/{check}/complete",
             headers=worker,
@@ -1491,6 +1536,29 @@ def test_lookups_verify_identity_before_reading_order_data(
         assert second["completed"] == ["order_identity_check"]
         assert [item["tool_key"] for item in second["pending"]] == ["order_lookup"]
         lookup_action = second["pending"][0]["action_id"]
+
+        # An expired executing read action stays recoverable via a fresh claim.
+        stale_claim = api.post(f"/actions/{lookup_action}/claim", headers=worker)
+        assert stale_claim.status_code == 200
+        with psycopg.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user="switchboard_owner",
+            password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+            connect_timeout=3,
+        ) as owner:
+            verify_cluster(owner, "switchboard_owner")
+            owner.execute("ALTER TABLE public.actions DISABLE TRIGGER actions_enforce_rules")
+            owner.execute(
+                "UPDATE public.actions SET lease_expires_at=clock_timestamp() WHERE id=%s",
+                (lookup_action,),
+            )
+            owner.execute("ALTER TABLE public.actions ENABLE TRIGGER actions_enforce_rules")
+            owner.execute(
+                "UPDATE public.execution_grants SET expires_at=clock_timestamp() WHERE action_id=%s",
+                (lookup_action,),
+            )
         dispatch = run(
             api,
             lookup_action,
@@ -1513,6 +1581,116 @@ def test_lookups_verify_identity_before_reading_order_data(
         if settings.offline_gateway_url:
             draft = draft_from_order_lookup(api, settings, body, bearer(draft_token))
 
+        # Asking about another customer's order on the same thread must not run order_lookup
+        # or produce an automatic reply.
+        same_thread = ingest_with_order("emma.jones@example.com", "NW-1002", thread_id=thread_id)
+        assert same_thread["case_id"] == body["case_id"]
+        assert same_thread["message_id"] != body["message_id"]
+        with (
+            create_pool(settings, max_size=1) as pool,
+            pool.connection() as conn,
+            conn.transaction(),
+        ):
+            set_northwind(conn)
+            with (
+                pytest.raises(
+                    psycopg.errors.RaiseException,
+                    match="requires verified identity for the same message and order",
+                ),
+                conn.transaction(),
+            ):
+                conn.execute(
+                    """INSERT INTO public.actions (tenant_id,case_id,message_id,trace_id,
+                        idempotency_key,tool_key,risk_level,input,status,adapter)
+                       VALUES (%s,%s,%s,%s,%s,'order_lookup','read','{"order_number":"NW-1002"}','proposed','mock')""",
+                    (
+                        NORTHWIND,
+                        same_thread["case_id"],
+                        same_thread["message_id"],
+                        uuid4(),
+                        f"forged:{same_thread['message_id']}",
+                    ),
+                )
+        thread_round1 = api.post("/lookups", json=same_thread, headers=bearer(lookup_token)).json()
+        assert [item["tool_key"] for item in thread_round1["pending"]] == ["order_identity_check"]
+        assert {"tool_key": "order_lookup", "reason": "identity_unverified"} in (
+            thread_round1["waiting"]
+        )
+        run(
+            api,
+            thread_round1["pending"][0]["action_id"],
+            {"order_found": True, "identity_verified": False},
+        )
+        thread_round2 = api.post("/lookups", json=same_thread, headers=bearer(lookup_token)).json()
+        assert thread_round2["pending"] == []
+        assert thread_round2["completed"] == ["order_identity_check"]
+        assert {"tool_key": "order_lookup", "reason": "identity_unverified"} in (
+            thread_round2["waiting"]
+        )
+        thread_decision = api.post("/decide", json=same_thread, headers=bearer(decide_token))
+        assert thread_decision.status_code == 200, thread_decision.text
+        assert thread_decision.json()["decision"] == "needs_approval"
+        if settings.offline_gateway_url:
+            thread_draft = api.post("/drafts", json=same_thread, headers=bearer(draft_token))
+            assert thread_draft.status_code == 200, thread_draft.text
+            assert thread_draft.json()["status"] == "pending"
+
+        # NW-1004 has a 15-digit numeric tracking number ('771200000000004') that passes the
+        # strict schema and must not be redacted as [CARD] in lookup_evidence or drafts.
+        nw1004 = ingest_with_order("arjun.mehta@example.com", "NW-1004")
+        nw1004_r1 = api.post("/lookups", json=nw1004, headers=bearer(lookup_token)).json()
+        run(
+            api,
+            nw1004_r1["pending"][0]["action_id"],
+            {"order_found": True, "identity_verified": True},
+        )
+        nw1004_r2 = api.post("/lookups", json=nw1004, headers=bearer(lookup_token)).json()
+        nw1004_lookup = nw1004_r2["pending"][0]["action_id"]
+        nw1004_claim = api.post(f"/actions/{nw1004_lookup}/claim", headers=worker).json()
+        api.post(
+            f"/actions/{nw1004_lookup}/consume",
+            headers=worker,
+            json={"grant": nw1004_claim["grant"]},
+        )
+        # Arbitrary carrier or tracking_number text is refused by the strict schema.
+        assert (
+            api.post(
+                f"/actions/{nw1004_lookup}/complete",
+                headers=worker,
+                json={
+                    "grant": nw1004_claim["grant"],
+                    "external_ref": "order:NW-1004",
+                    "output": {
+                        "order_status": "delivered",
+                        "carrier": "FedEx 123",
+                        "tracking_number": "771200000000004",
+                        "estimated_delivery_at": None,
+                    },
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            api.post(
+                f"/actions/{nw1004_lookup}/complete",
+                headers=worker,
+                json={
+                    "grant": nw1004_claim["grant"],
+                    "external_ref": "order:NW-1004",
+                    "output": {
+                        "order_status": "delivered",
+                        "carrier": "FedEx",
+                        "tracking_number": "771200000000004",
+                        "estimated_delivery_at": None,
+                    },
+                },
+            ).status_code
+            == 200
+        )
+        nw1004_draft = None
+        if settings.offline_gateway_url:
+            nw1004_draft = draft_from_order_lookup(api, settings, nw1004, bearer(draft_token))
+
         # A sender who does not own the order never unlocks the order lookup.
         stranger = ingest_with_order("stranger@example.test")
         pending = api.post("/lookups", json=stranger, headers=bearer(lookup_token)).json()
@@ -1529,10 +1707,33 @@ def test_lookups_verify_identity_before_reading_order_data(
         verify_cluster(conn, "switchboard_core")
         conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
         verified = conn.execute(
-            "SELECT id, identity_verified FROM public.cases WHERE tenant_id=%s AND id IN (%s,%s)",
-            (NORTHWIND, body["case_id"], stranger["case_id"]),
+            "SELECT id, identity_verified FROM public.cases WHERE tenant_id=%s AND id IN (%s,%s,%s)",
+            (NORTHWIND, body["case_id"], nw1004["case_id"], stranger["case_id"]),
         ).fetchall()
-        assert dict(verified) == {UUID(body["case_id"]): True, UUID(stranger["case_id"]): False}
+        assert dict(verified) == {
+            UUID(body["case_id"]): False,
+            UUID(nw1004["case_id"]): True,
+            UUID(stranger["case_id"]): False,
+        }
+        assert conn.execute(
+            """SELECT count(*) FROM public.actions
+                   WHERE tenant_id=%s AND message_id=%s AND tool_key='order_lookup'""",
+            (NORTHWIND, same_thread["message_id"]),
+        ).fetchone() == (0,)
+        pack_def = conn.execute(
+            "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=1"
+        ).fetchone()
+        assert pack_def is not None
+        assert lookup_evidence(
+            conn,
+            NORTHWIND,
+            DraftInput(case_id=UUID(nw1004["case_id"]), message_id=UUID(nw1004["message_id"])),
+            pack_def[0],
+        ) == {
+            f"tool:{nw1004_lookup}": (
+                "Your order NW-1004 is delivered with FedEx, tracking number 771200000000004."
+            )
+        }
         if draft is not None:
             # ADR 0020: the automatic reply quotes the verified lookup and cites its action.
             text, citations = conn.execute(
@@ -1547,6 +1748,15 @@ def test_lookups_verify_identity_before_reading_order_data(
                 "SELECT tool_key FROM public.actions WHERE tenant_id=%s AND id=%s",
                 (NORTHWIND, lookup_action),
             ).fetchone() == ("order_lookup",)
+        if nw1004_draft is not None:
+            nw1004_text, nw1004_citations = conn.execute(
+                "SELECT body,citations FROM public.drafts WHERE tenant_id=%s AND id=%s",
+                (NORTHWIND, nw1004_draft),
+            ).fetchone() or (None, None)
+            assert nw1004_text == (
+                "Your order NW-1004 is delivered with FedEx, tracking number 771200000000004."
+            )
+            assert nw1004_citations == [{"type": "tool", "action_id": str(nw1004_lookup)}]
 
         row = conn.execute(
             """SELECT inputs->'checks' FROM public.policy_decisions

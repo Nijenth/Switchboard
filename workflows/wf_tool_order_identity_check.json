@@ -154,7 +154,7 @@
           "queryReplacement": "={{ [$json.destination, $json.input.order_number, $json.input.sender_email] }}"
         }
       },
-      "alwaysOutputData": false
+      "alwaysOutputData": true
     },
     {
       "id": "SwitchboardIdentity1-7",
@@ -170,7 +170,7 @@
         "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: 'identity:' + $('Check dispatch contract').item.json.input.order_number, output: {order_found: $json.order_found, identity_verified: $json.identity_verified} }) }}",
+        "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: 'identity:' + $('Check dispatch contract').item.json.input.order_number, output: {order_found: Boolean($json.order_found), identity_verified: Boolean($json.identity_verified)} }) }}",
         "options": {
           "timeout": 5000,
           "redirect": {

@@ -8,11 +8,32 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.scan_secrets import PATTERNS as SECRET_PATTERNS
+except ModuleNotFoundError:  # pragma: no cover
+    from scan_secrets import PATTERNS as SECRET_PATTERNS  # type: ignore[import-not-found,no-redef]
+
 ROOT = Path(__file__).resolve().parents[1]
 SENSITIVE = re.compile(
     r"credential|secret|password|token|authorization|pindata|staticdata", re.IGNORECASE
 )
-INLINE_AUTH = re.compile(r"bearer\s+[^\s]+|\$env\b", re.IGNORECASE)
+INLINE_AUTH = re.compile(
+    r"(?:"
+    + "|".join(
+        [
+            r"\b(?:bearer|basic)\s+[^\s'\"`]+",
+            r"\$env\b|\bprocess\.env\b|\bDeno\.env\b",
+            r"[a-z][a-z0-9+.-]*://[^\s/'\"`@]+@",
+            r"[?&#](?:access_token|api[-_]?key|auth(?:orization)?|client_secret|key|pass(?:word)?|secret|sig(?:nature)?|token)=",
+            r"\b(?:api[-_]?key|auth(?:orization)?|client_secret|pass(?:word)?|secret|token)\s*(?:[:=]|\?\?=)\s*['\"`][^'\"`\s]+['\"`]",
+            r"['\"`](?:authorization|x-api-key|x-slack-signature)['\"`]\s*:",
+            r"\b[0-9a-f]{32,}\b",
+            *SECRET_PATTERNS.values(),
+        ]
+    )
+    + r")",
+    re.IGNORECASE,
+)
 ERROR_WORKFLOW = "SwitchboardError1"
 
 
@@ -22,7 +43,7 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, list):
         return [sanitize(item) for item in value]
     if isinstance(value, str) and INLINE_AUTH.search(value):
-        raise ValueError("Export contains an inline authorization value or environment access")
+        raise ValueError("Export contains an inline secret, credential URL, or environment access")
     return value
 
 
@@ -43,8 +64,10 @@ def export(raw: str) -> list[dict[str, Any]]:
         for node in nodes:
             if node["type"] == "n8n-nodes-base.httpRequest":
                 params = node["parameters"]
-                if params.get("sendHeaders"):
-                    raise ValueError("HTTP workflow headers must use a credential")
+                if params.get("sendHeaders") or params.get("sendQuery"):
+                    raise ValueError(
+                        "HTTP workflow headers and query parameters must use a credential"
+                    )
             if binding := placeholders.get(node["id"]):
                 node["credentials"] = binding
         settings = sanitize(workflow.get("settings", {}))

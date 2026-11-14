@@ -96,6 +96,22 @@ def propose_lookups(conn: Connection[Any], tenant: UUID, request: LookupInput) -
         ):
             waiting.append({"tool_key": key, "reason": "input_unavailable"})
             continue
+        order_number = payload.get("order_number")
+        identity_ok = (
+            bool(
+                verified
+                and conn.execute(
+                    "SELECT public.order_identity_is_verified(%s,%s,%s,%s)",
+                    (tenant, request.case_id, request.message_id, order_number),
+                ).fetchone()
+                == (True,)
+            )
+            if isinstance(order_number, str)
+            else bool(verified)
+        )
+        if requires_identity and not identity_ok:
+            waiting.append({"tool_key": key, "reason": "identity_unverified"})
+            continue
         idempotency_key = f"lookup:{request.message_id}:{key}"
         existing = conn.execute(
             "SELECT id,status FROM public.actions WHERE tenant_id=%s AND idempotency_key=%s",
@@ -109,9 +125,6 @@ def propose_lookups(conn: Connection[Any], tenant: UUID, request: LookupInput) -
                 pending.append({"action_id": action_id, "tool_key": key})
             else:
                 waiting.append({"tool_key": key, "reason": status})
-            continue
-        if requires_identity and not verified:
-            waiting.append({"tool_key": key, "reason": "identity_unverified"})
             continue
         adapter = adapters.get(key, "mock") if isinstance(adapters, dict) else "mock"
         if adapter != "mock":
