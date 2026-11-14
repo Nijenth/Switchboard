@@ -556,6 +556,93 @@ def test_decide_persists_invalid_tenant_policy(
         assert rows == [("escalate", "INVALID_POLICY", "admin")]
 
 
+@pytest.mark.parametrize(
+    ("marker", "check"),
+    [
+        ("", None),
+        ("[fixture:draft-bad-cite]", "g6_passed"),
+        ("[fixture:draft-pii]", "pii_safe"),
+        ("[fixture:draft-promise]", "policy_ok"),
+        ("[fixture:draft-tone]", "tone_ok"),
+    ],
+)
+def test_draft_policy_is_bound_to_exact_evidence(
+    client: TestClient,
+    credentials: dict[str, str],
+    settings: Settings,
+    marker: str,
+    check: str | None,
+) -> None:
+    if not settings.offline_gateway_url:
+        pytest.skip("run scripts/test_core.sh --offline-ai")
+    delivery = make_payload(SUPPORT)
+    delivery["body_text"] = f"How long does international delivery to Canada take? {marker}"
+    created = client.post("/ingest", json=delivery, headers=bearer(credentials[SUPPORT]))
+    assert created.status_code == 200
+    message = created.json()
+    body = {key: message[key] for key in ("case_id", "message_id")}
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        conn.execute(
+            """INSERT INTO public.classifications
+              (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
+               SELECT tenant_id,id,%s,pack_id,'product_question','rules','low',0.99
+               FROM public.cases WHERE tenant_id=%s AND id=%s""",
+            (body["message_id"], NORTHWIND, body["case_id"]),
+        )
+        conn.execute(
+            """INSERT INTO public.extractions
+              (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,status)
+               SELECT tenant_id,id,%s,pack_id,'order_reference',1,'{}','validated'
+               FROM public.cases WHERE tenant_id=%s AND id=%s""",
+            (body["message_id"], NORTHWIND, body["case_id"]),
+        )
+    token = token_hex(32)
+    config = replace(
+        settings, draft_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": token}])
+    )
+    with TestClient(create_app(config)) as api:
+        assert (
+            api.post("/drafts", json={**body, "g7_passed": True}, headers=bearer(token)).status_code
+            == 422
+        )
+        response = api.post("/drafts", json=body, headers=bearer(token))
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["trace_id"] == message["trace_id"]
+        assert result["status"] == ("pending" if check else "approved")
+        if check:
+            assert result["guardrails"][check] is False
+        assert api.post("/drafts", json=body, headers=bearer(token)).json() == result
+    with create_pool(settings, max_size=1) as pool, pool.connection() as conn, conn.transaction():
+        verify_cluster(conn, "switchboard_core")
+        conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
+        rows = conn.execute(
+            """SELECT p.decision,p.draft_id=d.id,p.draft_payload_hash=d.payload_hash,
+                      d.citations, a.step, d.body
+               FROM public.drafts d JOIN public.policy_decisions p ON p.id=d.policy_decision_id
+               JOIN public.ai_runs a ON a.id=d.ai_run_id
+               WHERE d.tenant_id=%s AND d.in_reply_to_message_id=%s""",
+            (NORTHWIND, body["message_id"]),
+        ).fetchall()
+        assert len(rows) == 1
+        outcome, bound_id, bound_hash, citations, step, text = rows[0]
+        assert (outcome, bound_id, bound_hash, step) == (
+            "needs_approval" if check else "auto",
+            True,
+            True,
+            "draft",
+        )
+        if check == "pii_safe":
+            assert text == "Draft withheld for privacy review."
+        if not check:
+            assert conn.execute(
+                "SELECT 1 FROM public.knowledge_chunks WHERE tenant_id=%s AND id=%s",
+                (NORTHWIND, citations[0]["id"]),
+            ).fetchone() == (1,)
+
+
 def test_model_risk_flags_persist_and_escalate(
     client: TestClient, credentials: dict[str, str], settings: Settings
 ) -> None:

@@ -52,6 +52,31 @@ def completion(body: dict[str, Any], anthropic: bool) -> tuple[int, dict[str, An
         }
     if "[fixture:invalid-both]" in customer or ("[fixture:invalid]" in customer and not anthropic):
         output = "{invalid-json"
+    elif body["model"] == "switchboard-fixture-draft":
+        evidence = next(
+            (
+                json.loads(item["content"].split("\n", 2)[1])
+                for item in body["messages"]
+                if isinstance(item["content"], str) and item["content"].startswith("<knowledge>\n")
+            ),
+            [],
+        )
+        if not evidence:
+            output = json.dumps({"body": "A reviewer can help with your request.", "citations": []})
+        else:
+            source = evidence[0]
+            sentence = re.split(r"(?<=[.!?])\s+|\n+", source["content"].strip())
+            reply = next((line for line in sentence if line and not line.startswith("#")), "")
+            overrides = {
+                "[fixture:draft-pii]": "Please contact fixture@example.test.",
+                "[fixture:draft-promise]": "We guarantee a refund tomorrow.",
+                "[fixture:draft-tone]": "This is your fault!",
+            }
+            reply = next(
+                (value for marker, value in overrides.items() if marker in customer), reply
+            )
+            citation = "unknown" if "[fixture:draft-bad-cite]" in customer else source["id"]
+            output = json.dumps({"body": reply, "citations": [citation]})
     elif "field_confidence" in serialized:
         order = re.search(r"\bNW-\d+\b", customer)
         output = json.dumps(

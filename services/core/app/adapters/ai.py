@@ -13,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 import yaml
 
 Provider = Literal["openai", "anthropic"]
+Model = Literal["openai", "anthropic", "draft"]
 OFFLINE_CONFIG = Path(__file__).resolve().parents[4] / "config/litellm/offline.yaml"
 
 
@@ -79,20 +80,30 @@ class OfflineGateway:
         }
 
     def prepare(
-        self, provider: Provider, instructions: str, redacted: str, schema: dict[str, Any]
+        self,
+        provider: Model,
+        instructions: str,
+        redacted: str,
+        schema: dict[str, Any],
+        *,
+        knowledge: list[dict[str, str]] | None = None,
     ) -> PreparedCall | None:
         alias = f"switchboard-{provider}"
         limits = self.limits[alias]
         customer_json = json.dumps(redacted, ensure_ascii=True).replace("<", r"\u003c")
+        messages = [
+            {"role": "system", "content": instructions},
+            {
+                "role": "user",
+                "content": f"<customer_message>\n{customer_json}\n</customer_message>",
+            },
+        ]
+        if knowledge is not None:
+            encoded = json.dumps(knowledge, ensure_ascii=True).replace("<", r"\u003c")
+            messages.append({"role": "user", "content": f"<knowledge>\n{encoded}\n</knowledge>"})
         body = {
             "model": alias,
-            "messages": [
-                {"role": "system", "content": instructions},
-                {
-                    "role": "user",
-                    "content": f"<customer_message>\n{customer_json}\n</customer_message>",
-                },
-            ],
+            "messages": messages,
             "max_tokens": limits.max_tokens,
             "response_format": {
                 "type": "json_schema",

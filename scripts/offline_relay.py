@@ -30,7 +30,8 @@ class Handler(BaseHTTPRequestHandler):
             if (
                 not isinstance(request, dict)
                 or set(request) != {"model", "messages", "max_tokens", "response_format"}
-                or request["model"] not in ("switchboard-openai", "switchboard-anthropic")
+                or request["model"]
+                not in ("switchboard-openai", "switchboard-anthropic", "switchboard-draft")
             ):
                 raise ValueError
         except (ValueError, RecursionError):

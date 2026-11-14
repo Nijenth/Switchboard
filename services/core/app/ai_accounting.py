@@ -1,12 +1,12 @@
 from decimal import Decimal
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
-from app.adapters.ai import OfflineGateway, Provider
+from app.adapters.ai import Model, OfflineGateway
 from app.understanding import Step, StopAttempts, validate_output
 
 
@@ -18,7 +18,7 @@ class Accounting:
         tenant: UUID,
         trace: UUID,
         redacted: str,
-        primary: Provider,
+        primary: Model,
         case: UUID | None = None,
         message: UUID | None = None,
     ) -> None:
@@ -30,17 +30,21 @@ class Accounting:
         self.latency_ms = 0
         self.blocked = False
         self.cost_unknown = False
-        self.runs: dict[Step, UUID] = {}
+        self.runs: dict[Step | Literal["draft"], UUID] = {}
 
     def attempt(
         self,
-        step: Step,
-        provider: Provider,
+        step: Step | Literal["draft"],
+        provider: Model,
         version: str,
         instructions: str,
         schema: dict[str, Any],
+        *,
+        knowledge: list[dict[str, str]] | None = None,
     ) -> dict[str, Any] | None:
-        prepared = self.gateway.prepare(provider, instructions, self.redacted, schema)
+        prepared = self.gateway.prepare(
+            provider, instructions, self.redacted, schema, knowledge=knowledge
+        )
         if prepared is None:
             raise StopAttempts
         reservation = prepared.reservation
@@ -74,7 +78,7 @@ class Accounting:
                     self.case,
                     self.message,
                     step,
-                    provider,
+                    "offline" if provider == "draft" else provider,
                     f"switchboard-{provider}",
                     version,
                     provider != self.primary,

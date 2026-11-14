@@ -25,7 +25,13 @@ class DecideInput(BaseModel):
     proposed_tools: list[ToolKey] = Field(default_factory=list, max_length=32)
 
 
-def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[str, Any]:
+def publish(
+    conn: Connection[Any],
+    tenant: UUID,
+    payload: DecideInput,
+    *,
+    draft_id: UUID | None = None,
+) -> dict[str, Any]:
     set_scope(conn, tenant)
     scope = (tenant, payload.case_id)
     row = conn.execute(
@@ -176,7 +182,28 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         or (blocked_attempt is not None and blocked_attempt[0] == "budget_blocked")
     )
     overrides = enrollment.get("rules", []) if isinstance(enrollment, dict) else None
-    decision = decide(pack, context, tools, proposed, overrides, budget_blocked=budget_blocked)
+    draft = None
+    if draft_id is not None:
+        draft = conn.execute(
+            """SELECT payload_hash,guardrail_results FROM public.drafts
+               WHERE tenant_id=%s AND case_id=%s AND in_reply_to_message_id=%s
+                 AND id=%s AND status='pending' FOR UPDATE""",
+            (tenant, payload.case_id, payload.message_id, draft_id),
+        ).fetchone()
+        if draft is None:
+            raise HTTPException(409, "Draft unavailable for policy evaluation")
+    citations_ok = bool(draft and draft[1].get("g6_passed") is True)
+    output_ok = bool(draft and draft[1].get("g7_passed") is True)
+    decision = decide(
+        pack,
+        context,
+        tools,
+        proposed,
+        overrides,
+        citations_ok=citations_ok,
+        output_ok=output_ok,
+        budget_blocked=budget_blocked,
+    )
     result = {**asdict(decision), "allowed_tools": list(decision.allowed_tools)}
     inputs = {
         **context,
@@ -184,8 +211,10 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         "proposed_tools": sorted(proposed),
         "tool_policy": tools,
         "budget_blocked": budget_blocked,
-        "citations_verified": False,
-        "output_guardrails_passed": False,
+        "citations_verified": citations_ok,
+        "output_guardrails_passed": output_ok,
+        "draft_id": str(draft_id) if draft_id else None,
+        "draft_payload_hash": draft[0] if draft else None,
         "tenant_rules": overrides,
         "result": result,
     }
@@ -203,8 +232,8 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
         """
         INSERT INTO public.policy_decisions (
             tenant_id,case_id,message_id,pack_id,trace_id,decision,rule_id,rule_source,
-            reason,required_role,allowed_tools,policy_version,inputs
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,revision
+            reason,required_role,allowed_tools,policy_version,inputs,draft_id,draft_payload_hash
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,revision
         """,
         (
             *message_scope,
@@ -217,6 +246,8 @@ def publish(conn: Connection[Any], tenant: UUID, payload: DecideInput) -> dict[s
             list(decision.allowed_tools),
             policy_version,
             Jsonb(inputs),
+            draft_id,
+            draft[0] if draft else None,
         ),
     ).fetchone()
     assert published is not None

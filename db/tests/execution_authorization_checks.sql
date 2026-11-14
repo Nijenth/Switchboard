@@ -2,6 +2,19 @@ SELECT pg_temp.expect_error('draft status alone cannot grant outbound authorizat
   $q$UPDATE drafts SET status='approved' WHERE id='95000000-0000-0000-0000-000000000001'$q$,
   'requires exact policy or human authorization');
 
+SELECT pg_temp.expect_error('auto send requires a draft with passing G6 and G7',
+  $q$INSERT INTO policy_decisions (tenant_id,case_id,pack_id,trace_id,decision,rule_id,rule_source,
+         reason,policy_version,allowed_tools,draft_id,draft_payload_hash)
+     SELECT d.tenant_id,d.case_id,c.pack_id,gen_random_uuid(),'auto','fixture','pack',
+            'Fixture allow','1',ARRAY['send_reply'],d.id,d.payload_hash
+     FROM drafts d JOIN cases c ON (c.tenant_id,c.id)=(d.tenant_id,d.case_id)
+     WHERE d.id='95000000-0000-0000-0000-000000000001'$q$,
+  'requires citations and passing G6 and G7');
+
+UPDATE drafts SET citations='[{"type":"chunk","id":"fixture"}]'::jsonb,
+  guardrail_results='{"g6_passed":true,"g7_passed":true}'::jsonb
+WHERE id='95000000-0000-0000-0000-000000000001';
+
 INSERT INTO policy_decisions (id, tenant_id, case_id, pack_id, trace_id, decision, rule_id,
                               rule_source, reason, policy_version, allowed_tools, draft_id, draft_payload_hash)
 SELECT '99000000-0000-0000-0000-000000000001', d.tenant_id, d.case_id, c.pack_id, gen_random_uuid(),
@@ -9,6 +22,14 @@ SELECT '99000000-0000-0000-0000-000000000001', d.tenant_id, d.case_id, c.pack_id
   FROM drafts d JOIN cases c ON (c.tenant_id,c.id) = (d.tenant_id,d.case_id)
  WHERE d.id='95000000-0000-0000-0000-000000000001';
 UPDATE drafts SET policy_decision_id='99000000-0000-0000-0000-000000000001'
+ WHERE id='95000000-0000-0000-0000-000000000001';
+
+UPDATE drafts SET body='Changed after policy evaluation.'
+ WHERE id='95000000-0000-0000-0000-000000000001';
+SELECT pg_temp.expect_error('passing checks cannot authorize a changed draft payload',
+  $q$UPDATE drafts SET status='approved' WHERE id='95000000-0000-0000-0000-000000000001'$q$,
+  'requires exact policy or human authorization');
+UPDATE drafts SET body='Thanks, received.'
  WHERE id='95000000-0000-0000-0000-000000000001';
 
 INSERT INTO actions (id, tenant_id, case_id, policy_decision_id, trace_id, idempotency_key,

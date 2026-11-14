@@ -29,6 +29,7 @@ from app.adapters.slack import (
 )
 from app.api.audit import audit_router
 from app.api.decide import decide_router
+from app.api.drafts import draft_router
 from app.api.execution import execution_router
 from app.api.retrieve import retrieve_router
 from app.api.understand import understand_router
@@ -64,6 +65,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(execution_router(pool, config.execution_credentials, bearer_token))
     app.include_router(audit_router(pool, config.audit_token, bearer_token))
     app.include_router(decide_router(pool, config.decide_credentials, bearer_token))
+    app.include_router(
+        draft_router(pool, config.draft_credentials, config.offline_gateway_url, bearer_token)
+    )
     app.include_router(retrieve_router(pool, config.retrieve_credentials, bearer_token))
     app.include_router(
         understand_router(

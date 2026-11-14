@@ -1,5 +1,26 @@
 # Switchboard runbook
 
+## Offline drafting
+
+Apply migration 018 and set `SWITCHBOARD_DRAFT_CREDENTIALS` to a JSON list of tenant IDs and
+dedicated 64-character hex bearer tokens. After `/understand`, call `POST /drafts` with the case
+and latest inbound message IDs. The offline alias receives redacted customer text and retrieved
+knowledge in separate untrusted-data blocks. This slice uses pack knowledge citations.
+Tool-result ingestion and citation support can follow the tool workflow slice.
+
+Core checks all cited IDs against the retrieved set. Automatic drafting requires an exact
+sentence from the cited knowledge, no detected PII or sensitive order reference, no detected
+unsupported promise or injection, and a passing tone check. These offline heuristics need
+evaluation before use with customer data. Invalid citations or failed checks leave the draft
+pending. If the model returns no usable result, the endpoint returns a review reason without
+storing a draft. Repeat requests return the existing live draft. The database also enforces
+one live draft per inbound message.
+
+An automatic send policy requires passing G6 and G7 on the same hashed draft payload. The
+endpoint records the draft, policy decision, and audit event in one transaction. It does not
+dispatch a reply. Existing automatic decisions without passing evidence require a new policy
+decision before dispatch. The offline drafting quality status is **built, not measured**.
+
 ## Offline knowledge search
 
 Apply migration 017 before publishing pack knowledge with the loader. Set
