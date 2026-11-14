@@ -99,6 +99,161 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.mark.parametrize("eligible", [False, True])
+def test_refund_proposal_uses_only_eligibility_evidence(
+    settings: Settings, credentials: dict[str, str], eligible: bool
+) -> None:
+    lookup, worker, refund = (token_hex(32) for _ in range(3))
+    config = replace(
+        settings,
+        lookup_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": lookup}]),
+        refund_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": refund}]),
+        execution_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "role": "worker",
+                    "principal": "refund-test",
+                    "token": worker,
+                }
+            ]
+        ),
+    )
+    order = "NW-1008" if eligible else "NW-1004"
+    sender = "sofia.rossi@example.com" if eligible else "arjun.mehta@example.com"
+    with TestClient(create_app(config)) as api:
+
+        def ingest() -> dict[str, str]:
+            response = api.post(
+                "/ingest",
+                json={
+                    **make_payload(SUPPORT),
+                    "sender": {"address": sender},
+                    "body_text": f"Refund {order}",
+                },
+                headers=bearer(credentials[SUPPORT]),
+            )
+            assert response.status_code == 200
+            body = {key: response.json()[key] for key in ("case_id", "message_id")}
+            with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                verify_cluster(conn, "switchboard_core")
+                set_northwind(conn)
+                conn.execute(
+                    """INSERT INTO public.classifications
+                         (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
+                       SELECT tenant_id,id,%s,pack_id,'returns_refunds','rules','normal',0.99
+                       FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                    (body["message_id"], NORTHWIND, body["case_id"]),
+                )
+                conn.execute(
+                    """INSERT INTO public.extractions
+                         (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,field_confidence,status)
+                       SELECT tenant_id,id,%s,pack_id,'order_reference',1,%s,%s,'validated'
+                       FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                    (
+                        body["message_id"],
+                        dumps({"order_number": order}),
+                        '{"order_number":0.99}',
+                        NORTHWIND,
+                        body["case_id"],
+                    ),
+                )
+            return body
+
+        def complete_lookup(body: dict[str, str], tool: str, output: dict[str, object]) -> None:
+            proposals = api.post("/lookups", json=body, headers=bearer(lookup))
+            assert proposals.status_code == 200, proposals.text
+            action_id = next(
+                a["action_id"] for a in proposals.json()["pending"] if a["tool_key"] == tool
+            )
+            grant = api.post(f"/actions/{action_id}/claim", headers=bearer(worker)).json()["grant"]
+            assert (
+                api.post(
+                    f"/actions/{action_id}/consume", headers=bearer(worker), json={"grant": grant}
+                ).status_code
+                == 200
+            )
+            result = api.post(
+                f"/actions/{action_id}/complete",
+                headers=bearer(worker),
+                json={"grant": grant, "external_ref": str(uuid4()), "output": output},
+            )
+            assert result.status_code == 200, result.text
+
+        def prepare(body: dict[str, str]) -> None:
+            complete_lookup(
+                body, "order_identity_check", {"order_found": True, "identity_verified": True}
+            )
+            complete_lookup(
+                body,
+                "order_refund_eligibility",
+                {
+                    "eligible": eligible,
+                    "reason": "eligible" if eligible else "window_expired",
+                    "refundable_amount": "32.00" if eligible else None,
+                    "currency": "EUR" if eligible else None,
+                },
+            )
+
+        body = ingest()
+        assert api.post("/refunds/propose", json=body, headers=bearer(lookup)).status_code == 403
+        assert (
+            api.post(
+                "/refunds/propose", json={**body, "amount": "1.00"}, headers=bearer(refund)
+            ).status_code
+            == 422
+        )
+        assert api.post("/refunds/propose", json=body, headers=bearer(refund)).json() == {
+            "waiting": "current_eligibility_required"
+        }
+        prepare(body)
+        response = api.post("/refunds/propose", json=body, headers=bearer(refund))
+        assert response.status_code == 200, response.text
+        if not eligible:
+            assert response.json() == {"waiting": "window_expired"}
+            return
+        proposed = response.json()
+        assert proposed["status"] == "pending_approval"
+        assert api.post("/refunds/propose", json=body, headers=bearer(refund)).json() == proposed
+        second = ingest()
+        prepare(second)
+        assert api.post("/refunds/propose", json=second, headers=bearer(refund)).json() == {
+            "waiting": "order_refund_already_exists"
+        }
+        with (
+            psycopg.connect(
+                host=settings.db_host,
+                port=settings.db_port,
+                dbname=settings.db_name,
+                user="switchboard_owner",
+                password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+                connect_timeout=3,
+            ) as owner,
+            owner.transaction(),
+        ):
+            verify_cluster(owner, "switchboard_owner")
+            owner.execute("SELECT set_config('app.tenant_id',%s,true)", (str(NORTHWIND),))
+            assert owner.execute(
+                """SELECT a.amount,a.currency,r.required_role FROM public.actions a
+                   JOIN public.approval_requests r ON (r.tenant_id,r.subject_id)=(a.tenant_id,a.id)
+                   WHERE a.tenant_id=%s AND a.id=%s""",
+                (NORTHWIND, proposed["action_id"]),
+            ).fetchone() == (32, "EUR", "manager")
+            owner.execute(
+                """UPDATE public.approval_requests SET sla_due_at=clock_timestamp()-interval '1 second'
+                   WHERE tenant_id=%s AND id=%s""",
+                (NORTHWIND, proposed["approval_id"]),
+            )
+            with (
+                pytest.raises(psycopg.errors.RaiseException, match="past its SLA"),
+                owner.transaction(),
+            ):
+                owner.execute(
+                    "SELECT public.record_approval_decision(%s,%s,'approved','api')",
+                    (proposed["approval_id"], UUID("20000000-0000-0000-0000-000000000002")),
+                )
+
+
 def test_health_uses_actual_core_login(client: TestClient, settings: Settings) -> None:
     assert client.get("/health", headers=bearer(settings.health_token)).status_code == 200
 
@@ -125,8 +280,8 @@ def test_retrieve_ranks_and_scopes_pinned_pack_knowledge(
         verify_cluster(conn, "switchboard_config_loader")
         for tenant, pack, version, status in (
             (ACME, "ecommerce_support", 1, "active"),
-            (NORTHWIND, "ecommerce_support", 2, "active"),
-            (NORTHWIND, "ecommerce_support", 1, "archived"),
+            (NORTHWIND, "ecommerce_support", 1, "active"),
+            (NORTHWIND, "ecommerce_support", 2, "archived"),
             (NORTHWIND, "invoice_processing", 1, "active"),
         ):
             conn.execute(
@@ -430,7 +585,7 @@ def test_offline_falls_back_from_anthropic(settings: Settings) -> None:
         with pool.connection() as conn:
             verify_cluster(conn, "switchboard_core")
             row = conn.execute(
-                "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=1"
+                "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=2"
             ).fetchone()
         assert row is not None
         accounting = Accounting(
@@ -500,7 +655,7 @@ def test_decide_publishes_scoped_idempotent_policy(
         assert len(rows) == 1
         inputs, version = rows[0]
         assert inputs["classification"]["flags"] == ["prompt_injection"]
-        assert version == "engine:2+ecommerce_support:1"
+        assert version == "engine:2+ecommerce_support:2"
 
 
 def test_decide_persists_invalid_tenant_policy(
@@ -1018,6 +1173,21 @@ def test_approval_checks_sla_after_waiting_for_request_lock(settings: Settings) 
             assert connection.execute(
                 "SELECT public.expire_approval_request(%s)", (request_id,)
             ).fetchone() == (True,)
+            assert connection.execute(
+                """SELECT r.status, a.status, a.id
+                   FROM public.approval_requests r
+                   JOIN public.actions a ON (a.tenant_id, a.id) = (r.tenant_id, r.subject_id)
+                   WHERE r.id = %s""",
+                (request_id,),
+            ).fetchone()[:2] == ("expired", "cancelled")
+            assert connection.execute(
+                """SELECT count(*) FROM public.audit_log l
+                   JOIN public.approval_requests r
+                     ON (r.tenant_id, r.subject_id) = (l.tenant_id, l.entity_id)
+                   WHERE r.id = %s AND l.event_type = 'action.cancelled'
+                     AND l.details->>'reason' = 'approval_expired'""",
+                (request_id,),
+            ).fetchone() == (1,)
 
 
 def test_concurrent_workers_claim_one_action(settings: Settings) -> None:
@@ -1547,31 +1717,12 @@ def test_lookups_verify_identity_before_reading_order_data(
         )
         assert completed.status_code == 200, completed.text
 
-        with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
-            verify_cluster(conn, "switchboard_core")
-            set_northwind(conn)
-            refund_actions = conn.execute(
-                """INSERT INTO public.actions
-                     (tenant_id,case_id,message_id,trace_id,idempotency_key,tool_key,risk_level,input,
-                      status)
-                   SELECT m.tenant_id,m.case_id,m.id,m.trace_id,
-                          'refund-eligibility:' || m.id || ':' || input::text,
-                          'refund_eligibility_check','read',input,'proposed'
-                   FROM public.messages m CROSS JOIN (VALUES
-                     ('{"order_number":"NW-1001"}'::jsonb), ('{"order_number":"NW-1002"}'), ('{}')
-                   ) v(input)
-                   WHERE m.tenant_id=%s AND m.id=%s
-                   RETURNING input,id""",
-                (NORTHWIND, body["message_id"]),
-            ).fetchall()
-        assert len(refund_actions) == 3
-        for _, action_id in refund_actions:
-            refund_claim = api.post(f"/actions/{action_id}/claim", headers=worker)
-            assert refund_claim.status_code == 409, refund_claim.text
-
         second = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert second["completed"] == ["order_identity_check"]
-        assert [item["tool_key"] for item in second["pending"]] == ["order_lookup"]
+        assert [item["tool_key"] for item in second["pending"]] == [
+            "order_lookup",
+            "order_refund_eligibility",
+        ]
         lookup_action = second["pending"][0]["action_id"]
 
         # An expired executing read action stays recoverable via a fresh claim.
@@ -1607,10 +1758,20 @@ def test_lookups_verify_identity_before_reading_order_data(
             },
         )
         assert dispatch["input"] == {"order_number": "NW-1001"}
+        run(
+            api,
+            second["pending"][1]["action_id"],
+            {
+                "eligible": False,
+                "reason": "not_delivered",
+                "refundable_amount": None,
+                "currency": None,
+            },
+        )
         third = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert (third["pending"], sorted(third["completed"])) == (
             [],
-            ["order_identity_check", "order_lookup"],
+            ["order_identity_check", "order_lookup", "order_refund_eligibility"],
         )
         decided = api.post("/decide", json=body, headers=bearer(decide_token))
         assert decided.status_code == 200, decided.text
@@ -1775,7 +1936,7 @@ def test_lookups_verify_identity_before_reading_order_data(
             (NORTHWIND, same_thread["message_id"]),
         ).fetchone() == (0,)
         pack_def = conn.execute(
-            "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=1"
+            "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=2"
         ).fetchone()
         assert pack_def is not None
         assert lookup_evidence(
@@ -1825,3 +1986,360 @@ def test_lookups_verify_identity_before_reading_order_data(
             (NORTHWIND, body["case_id"]),
         ).fetchone()
         assert events == (1,)
+
+
+def test_refund_approval_expiry_and_edited_amount_refusal(
+    settings: Settings, credentials: dict[str, str]
+) -> None:
+    manager = UUID("20000000-0000-0000-0000-000000000002")
+    lookup, worker, poster, refund, manager_token, finance_token = (token_hex(32) for _ in range(6))
+    config = replace(
+        settings,
+        lookup_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": lookup}]),
+        refund_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": refund}]),
+        execution_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "role": "worker",
+                    "principal": "refund-expiry-worker",
+                    "token": worker,
+                },
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "role": "approval_poster",
+                    "principal": "refund-expiry-poster",
+                    "token": poster,
+                },
+            ]
+        ),
+        approval_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "reviewer_id": str(manager),
+                    "channel": "api",
+                    "token": manager_token,
+                },
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "reviewer_id": str(FINANCE),
+                    "channel": "api",
+                    "token": finance_token,
+                },
+            ]
+        ),
+    )
+    workspace = "T000REFEXP"
+    slack_user = "U000MARCO"
+    order = "NW-1099"
+    sender = "sofia.rossi@example.com"
+
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_config_loader",
+        password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+        connect_timeout=3,
+    ) as loader:
+        verify_cluster(loader, "switchboard_config_loader")
+        prev_workspace_row = loader.execute(
+            "SELECT slack_workspace_id FROM public.tenant_settings WHERE tenant_id = %s",
+            (NORTHWIND,),
+        ).fetchone()
+        prev_slack_user_row = loader.execute(
+            "SELECT slack_user_id FROM public.staff_users WHERE tenant_id = %s AND id = %s",
+            (NORTHWIND, manager),
+        ).fetchone()
+        loader.execute(
+            "UPDATE public.tenant_settings SET slack_workspace_id = %s WHERE tenant_id = %s",
+            (workspace, NORTHWIND),
+        )
+        loader.execute(
+            "UPDATE public.staff_users SET slack_user_id = %s WHERE tenant_id = %s AND id = %s",
+            (slack_user, NORTHWIND, manager),
+        )
+        # The seeded channel is not a valid Slack ID; set a real-looking one so this test
+        # does not depend on test_n8n_outbound having run first.
+        prev_channel_row = loader.execute(
+            "SELECT notify_channel FROM public.queues WHERE tenant_id = %s AND key = %s",
+            (NORTHWIND, "customer_support"),
+        ).fetchone()
+        loader.execute(
+            "UPDATE public.queues SET notify_channel = %s WHERE tenant_id = %s AND key = %s",
+            ("C0REFUND01", NORTHWIND, "customer_support"),
+        )
+        loader.commit()
+
+    try:
+        with TestClient(create_app(config)) as api:
+
+            def ingest_and_prepare() -> dict[str, str]:
+                response = api.post(
+                    "/ingest",
+                    json={
+                        **make_payload(SUPPORT),
+                        "sender": {"address": sender},
+                        "body_text": f"Refund {order}",
+                    },
+                    headers=bearer(credentials[SUPPORT]),
+                )
+                assert response.status_code == 200
+                body = {key: response.json()[key] for key in ("case_id", "message_id")}
+                with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                    verify_cluster(conn, "switchboard_core")
+                    set_northwind(conn)
+                    conn.execute(
+                        """INSERT INTO public.classifications
+                             (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
+                           SELECT tenant_id,id,%s,pack_id,'returns_refunds','rules','normal',0.99
+                           FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                        (body["message_id"], NORTHWIND, body["case_id"]),
+                    )
+                    conn.execute(
+                        """INSERT INTO public.extractions
+                             (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,field_confidence,status)
+                           SELECT tenant_id,id,%s,pack_id,'order_reference',1,%s,%s,'validated'
+                           FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                        (
+                            body["message_id"],
+                            dumps({"order_number": order}),
+                            '{"order_number":0.99}',
+                            NORTHWIND,
+                            body["case_id"],
+                        ),
+                    )
+                for tool, output in (
+                    ("order_identity_check", {"order_found": True, "identity_verified": True}),
+                    (
+                        "order_refund_eligibility",
+                        {
+                            "eligible": True,
+                            "reason": "eligible",
+                            "refundable_amount": "32.00",
+                            "currency": "EUR",
+                        },
+                    ),
+                ):
+                    proposals = api.post("/lookups", json=body, headers=bearer(lookup))
+                    assert proposals.status_code == 200, proposals.text
+                    action_id = next(
+                        a["action_id"] for a in proposals.json()["pending"] if a["tool_key"] == tool
+                    )
+                    grant = api.post(f"/actions/{action_id}/claim", headers=bearer(worker)).json()[
+                        "grant"
+                    ]
+                    assert (
+                        api.post(
+                            f"/actions/{action_id}/consume",
+                            headers=bearer(worker),
+                            json={"grant": grant},
+                        ).status_code
+                        == 200
+                    )
+                    assert (
+                        api.post(
+                            f"/actions/{action_id}/complete",
+                            headers=bearer(worker),
+                            json={"grant": grant, "external_ref": str(uuid4()), "output": output},
+                        ).status_code
+                        == 200
+                    )
+                return body
+
+            first_msg = ingest_and_prepare()
+            first_refund = api.post("/refunds/propose", json=first_msg, headers=bearer(refund))
+            assert first_refund.status_code == 200, first_refund.text
+            proposed = first_refund.json()
+            assert proposed["status"] == "pending_approval"
+            action_1 = proposed["action_id"]
+            approval_1 = proposed["approval_id"]
+
+            notif = api.get(f"/actions/approvals/{approval_1}/notification", headers=bearer(poster))
+            assert notif.status_code == 200, notif.text
+            slack_channel = notif.json()["channel"]
+            slack_ts = f"{int(time())}.123456"
+            posted = api.post(
+                f"/actions/approvals/{approval_1}/notification",
+                headers=bearer(poster),
+                json={"channel": slack_channel, "ts": slack_ts},
+            )
+            assert posted.status_code == 200, posted.text
+
+            with (
+                psycopg.connect(
+                    host=settings.db_host,
+                    port=settings.db_port,
+                    dbname=settings.db_name,
+                    user="switchboard_owner",
+                    password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+                    connect_timeout=3,
+                ) as owner,
+                owner.transaction(),
+            ):
+                verify_cluster(owner, "switchboard_owner")
+                owner.execute("SELECT set_config('app.tenant_id',%s,true)", (str(NORTHWIND),))
+                owner.execute(
+                    """UPDATE public.approval_requests
+                          SET sla_due_at = clock_timestamp() - interval '1 second'
+                        WHERE tenant_id = %s AND id = %s""",
+                    (NORTHWIND, approval_1),
+                )
+
+            expired = api.post("/actions/approvals/expire", headers=bearer(poster))
+            assert expired.status_code == 200, expired.text
+            assert expired.json() >= 1
+
+            with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                verify_cluster(conn, "switchboard_core")
+                set_northwind(conn)
+                assert conn.execute(
+                    """SELECT r.status, a.status
+                       FROM public.approval_requests r
+                       JOIN public.actions a ON (a.tenant_id, a.id) = (r.tenant_id, r.subject_id)
+                       WHERE r.id = %s""",
+                    (approval_1,),
+                ).fetchone() == ("expired", "cancelled")
+                audit_events = conn.execute(
+                    """SELECT event_type, entity_id, details->>'reason'
+                       FROM public.audit_log
+                       WHERE tenant_id = %s AND entity_id IN (%s, %s)
+                         AND event_type IN ('approval.expired', 'action.cancelled')""",
+                    (NORTHWIND, approval_1, action_1),
+                ).fetchall()
+                assert (
+                    "approval.expired",
+                    UUID(approval_1),
+                    None,
+                ) in audit_events
+                assert (
+                    "action.cancelled",
+                    UUID(action_1),
+                    "approval_expired",
+                ) in audit_events
+
+            # Expired refund can never be claimed or consumed, and late Slack approval is refused.
+            assert api.post(f"/actions/{action_1}/claim", headers=bearer(worker)).status_code == 409
+            assert (
+                api.post(
+                    f"/actions/{action_1}/consume",
+                    headers=bearer(worker),
+                    json={"grant": token_hex(32)},
+                ).status_code
+                == 409
+            )
+
+            secret = settings.slack_signing_secret
+            assert secret is not None
+            slack_payload = {
+                "type": "block_actions",
+                "api_app_id": settings.slack_app_id,
+                "team": {"id": workspace},
+                "user": {"id": slack_user},
+                "container": {
+                    "type": "message",
+                    "channel_id": slack_channel,
+                    "message_ts": slack_ts,
+                },
+                "actions": [
+                    {
+                        "type": "button",
+                        "action_id": "switchboard_approve",
+                        "value": str(approval_1),
+                    }
+                ],
+            }
+            slack_body = urlencode({"payload": dumps(slack_payload)}).encode()
+            stamp = str(int(time()))
+            sig = digest(
+                secret.encode(), b"v0:" + stamp.encode() + b":" + slack_body, "sha256"
+            ).hex()
+            late_slack = api.post(
+                "/approvals/slack",
+                content=slack_body,
+                headers={
+                    "X-Slack-Request-Timestamp": stamp,
+                    "X-Slack-Signature": f"v0={sig}",
+                },
+            )
+            assert late_slack.status_code == 409
+
+            # Order is released: a second message for the same order can propose a fresh refund.
+            second_msg = ingest_and_prepare()
+            second_refund = api.post("/refunds/propose", json=second_msg, headers=bearer(refund))
+            assert second_refund.status_code == 200, second_refund.text
+            fresh = second_refund.json()
+            assert fresh["status"] == "pending_approval"
+            action_2 = fresh["action_id"]
+            approval_2 = fresh["approval_id"]
+            assert action_2 != action_1
+
+            # Reviewer "edited" decision changing refund amount is refused with 409; refund stays pending.
+            edited = api.post(
+                f"/approvals/{approval_2}/decide",
+                headers=bearer(manager_token),
+                json={"decision": "edited", "edited_payload": {"amount": 10.0}},
+            )
+            assert edited.status_code == 409, edited.text
+            assert "cannot be edited" in edited.json()["detail"].lower()
+
+            with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                verify_cluster(conn, "switchboard_core")
+                set_northwind(conn)
+                assert conn.execute(
+                    """SELECT r.status, a.status, a.amount, a.currency
+                       FROM public.approval_requests r
+                       JOIN public.actions a ON (a.tenant_id, a.id) = (r.tenant_id, r.subject_id)
+                       WHERE r.id = %s""",
+                    (approval_2,),
+                ).fetchone() == ("pending", "pending_approval", 32, "EUR")
+                assert conn.execute(
+                    "SELECT count(*) FROM public.approval_decisions WHERE request_id = %s",
+                    (approval_2,),
+                ).fetchone() == (0,)
+
+            # Valid approval succeeds, and non-order action edit via /decide still works.
+            approved = api.post(
+                f"/approvals/{approval_2}/decide",
+                headers=bearer(manager_token),
+                json={"decision": "approved", "comment": "Looks right"},
+            )
+            assert approved.status_code == 200, approved.text
+
+            with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                verify_cluster(conn, "switchboard_core")
+                set_northwind(conn)
+                assert conn.execute(
+                    "SELECT status FROM public.actions WHERE id = %s", (action_2,)
+                ).fetchone() == ("approved",)
+                non_order_req = pending_request(conn)
+
+            edited_non_order = api.post(
+                f"/approvals/{non_order_req}/decide",
+                headers=bearer(finance_token),
+                json={"decision": "edited", "edited_payload": {"amount": 120, "currency": "USD"}},
+            )
+            assert edited_non_order.status_code == 200, edited_non_order.text
+    finally:
+        with psycopg.connect(
+            host=settings.db_host,
+            port=settings.db_port,
+            dbname=settings.db_name,
+            user="switchboard_config_loader",
+            password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+            connect_timeout=3,
+        ) as loader:
+            loader.execute(
+                "UPDATE public.tenant_settings SET slack_workspace_id = %s WHERE tenant_id = %s",
+                (prev_workspace_row[0] if prev_workspace_row else None, NORTHWIND),
+            )
+            loader.execute(
+                "UPDATE public.staff_users SET slack_user_id = %s WHERE tenant_id = %s AND id = %s",
+                (prev_slack_user_row[0] if prev_slack_user_row else None, NORTHWIND, manager),
+            )
+            loader.execute(
+                "UPDATE public.queues SET notify_channel = %s WHERE tenant_id = %s AND key = %s",
+                (prev_channel_row[0] if prev_channel_row else None, NORTHWIND, "customer_support"),
+            )
+            loader.commit()

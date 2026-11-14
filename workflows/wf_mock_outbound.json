@@ -94,6 +94,57 @@
           "waitForSubWorkflow": true
         }
       }
+    },
+    {
+      "id": "6e70dcf7-916f-4b81-894c-6a2958c30548",
+      "name": "List approved mock refunds",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        240
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/dispatch/order_refund_issue' }}",
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
+        }
+      }
+    },
+    {
+      "id": "77261392-d903-463a-9605-04641c78a45c",
+      "name": "Run mock refund",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        740,
+        240
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardRefundIssue1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
     }
   ],
   "connections": {
@@ -126,6 +177,22 @@
             "node": "List approved mock sends",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "List approved mock refunds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List approved mock refunds": {
+      "main": [
+        [
+          {
+            "node": "Run mock refund",
+            "index": 0,
+            "type": "main"
           }
         ]
       ]

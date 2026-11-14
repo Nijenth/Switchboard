@@ -13,3 +13,7 @@
 ## Order tool authorization
 
 - The identity follow-up reproduced refund claims for a different order using the case-wide verification flag under migration 021's rules. Migration 022 checks message and order identity at both claim and consumption. Include a test for grants issued before an authorization change, since a claim check cannot govern grants already issued.
+
+## n8n expressions
+
+- The refund harness reproduced an expression syntax error when a nested object placed two closing braces next to each other inside an HTTP body expression. Keep the nested braces apart so they cannot be parsed as the expression terminator. Test the workflow in the pinned n8n runtime because the underlying JavaScript alone can parse successfully.

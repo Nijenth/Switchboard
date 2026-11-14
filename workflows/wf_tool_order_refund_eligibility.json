@@ -1,0 +1,281 @@
+{
+  "id": "SwitchboardRefundEligibility1",
+  "name": "wf_tool_order_refund_eligibility",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardRefundEligibility1-1",
+      "name": "Receive action ID",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-2",
+      "name": "Claim action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/actions/' + $('Receive action ID').first().json.action_id + '/claim' }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-3",
+      "name": "Keep successful claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().flatMap((item, index) => {\n  if (item.json.statusCode === 409) return [];\n  if (item.json.statusCode !== 200) throw new Error('Core claim failed');\n  return [{json: item.json.body, pairedItem: {item: index}}];\n});"
+      }
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-4",
+      "name": "Consume grant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/actions/' + $('Receive action ID').first().json.action_id + '/consume' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({grant: $json.grant}) }}",
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-5",
+      "name": "Check dispatch contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().flatMap((item, index) => {\n  if (item.json.statusCode === 409) return [];\n  const body = item.json.body;\n  if (item.json.statusCode !== 200 || body.tool_key !== 'order_refund_eligibility' || body.adapter !== 'mock' || !body.input)\n    throw new Error('Core returned an unexpected mock dispatch');\n  return [{json: body, pairedItem: {item: index}}];\n});"
+      }
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-6",
+      "name": "Query mock shop",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM demo.refund_eligibility($1::uuid,$2::text)",
+        "options": {
+          "queryReplacement": "={{ [$json.destination, $json.input.order_number] }}"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "SwitchboardRefundEligibility1-7",
+      "name": "Complete with result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/actions/' + $('Receive action ID').first().json.action_id + '/complete' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').first().json.grant, external_ref: 'eligibility:' + $('Check dispatch contract').first().json.input.order_number, output: {eligible: $json.eligible, reason: $json.reason, refundable_amount: $json.refundable_amount, currency: $json.currency} }) }}",
+        "options": {
+          "timeout": 5000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Receive action ID": {
+      "main": [
+        [
+          {
+            "node": "Load service URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
+      "main": [
+        [
+          {
+            "node": "Claim action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim action": {
+      "main": [
+        [
+          {
+            "node": "Keep successful claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep successful claims": {
+      "main": [
+        [
+          {
+            "node": "Consume grant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consume grant": {
+      "main": [
+        [
+          {
+            "node": "Check dispatch contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check dispatch contract": {
+      "main": [
+        [
+          {
+            "node": "Query mock shop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query mock shop": {
+      "main": [
+        [
+          {
+            "node": "Complete with result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

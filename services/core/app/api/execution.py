@@ -53,11 +53,14 @@ class Evidence(BaseModel):
     outcome: Literal["found", "absent", "inconclusive"]
     lookup_ref: Reference
     external_ref: Reference | None = None
+    output: dict[str, JsonValue] | None = None
 
     @model_validator(mode="after")
     def check_reference(self) -> "Evidence":
         if (self.outcome == "found") != (self.external_ref is not None):
             raise ValueError("Only a found result carries an external reference")
+        if self.output is not None and self.outcome != "found":
+            raise ValueError("Only a found result carries output")
         return self
 
 
@@ -183,20 +186,27 @@ def execution_router(
             schema = transition(
                 credential,
                 """
-                SELECT t.output_schema FROM public.actions a JOIN public.tools t ON t.key=a.tool_key
-                WHERE a.tenant_id=%s AND a.id=%s AND a.risk_level='read'
+                SELECT jsonb_build_object('schema',t.output_schema,'risk',a.risk_level)
+                FROM public.actions a JOIN public.tools t ON t.key=a.tool_key
+                WHERE a.tenant_id=%s AND a.id=%s AND a.risk_level IN ('read','money')
                 """,
                 (credential.tenant_id, action_id),
             )
             if (
                 not isinstance(schema, dict)
-                or not schema
-                or not Draft202012Validator(schema, registry=Registry()).is_valid(body.output)
+                or not schema["schema"]
+                or not Draft202012Validator(schema["schema"], registry=Registry()).is_valid(
+                    body.output
+                )
             ):
-                raise HTTPException(422, "Read result does not match the tool's output schema")
+                raise HTTPException(422, "Result does not match the tool's output schema")
             result = transition(
                 credential,
-                "SELECT public.complete_mock_read(%s,%s,%s,%s,%s)",
+                (
+                    "SELECT public.complete_mock_money(%s,%s,%s,%s,%s)"
+                    if schema["risk"] == "money"
+                    else "SELECT public.complete_mock_read(%s,%s,%s,%s,%s)"
+                ),
                 (action_id, credential.principal, digest, body.external_ref, Jsonb(body.output)),
             )
         if result is not True:
@@ -210,11 +220,18 @@ def execution_router(
         body: Evidence | None = None,
     ) -> dict[str, str]:
         evidence = (
-            (body.outcome, body.lookup_ref, body.external_ref) if body else (None, None, None)
+            (
+                body.outcome,
+                body.lookup_ref,
+                body.external_ref,
+                Jsonb(body.output) if body.output is not None else None,
+            )
+            if body
+            else (None, None, None, None)
         )
         status = transition(
             credential,
-            "SELECT public.reconcile_mock_action(%s,%s,%s,%s)",
+            "SELECT public.reconcile_mock_action(%s,%s,%s,%s,%s)",
             (action_id, *evidence),
         )
         if not isinstance(status, str):
@@ -223,21 +240,21 @@ def execution_router(
 
     @router.get("/reconciliation/pending")
     def reconciliation_pending(
-        credential: Annotated[Credential, Depends(reconciler)], tool_key: str = "send_reply"
+        credential: Annotated[Credential, Depends(reconciler)], tool_key: str | None = None
     ) -> object:
         return transition(
             credential,
             """
             SELECT coalesce(jsonb_agg(to_jsonb(item)), '[]'::jsonb)
-              FROM (SELECT id AS action_id, tenant_id, trace_id
+              FROM (SELECT id AS action_id, tenant_id, trace_id, tool_key, idempotency_key
                       FROM public.actions
                      WHERE tenant_id = %s AND adapter = 'mock'
-                       AND tool_key = %s
+                       AND risk_level <> 'read' AND (%s::text IS NULL OR tool_key = %s)
                        AND (status = 'unknown_outcome' OR
                             (status = 'executing' AND lease_expires_at <= clock_timestamp()))
                      ORDER BY lease_expires_at, id LIMIT 100) item
             """,
-            (credential.tenant_id, tool_key),
+            (credential.tenant_id, tool_key, tool_key),
         )
 
     @router.get("/dispatch/{tool_key}")

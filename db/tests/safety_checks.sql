@@ -144,6 +144,31 @@ SELECT pg_temp.expect_error('request freezes a proposed action payload',
   $q$UPDATE actions SET amount = 100000 WHERE id = '93000000-0000-0000-0000-000000000002'$q$,
   'payload is frozen');
 
+SAVEPOINT write_action_expiry;
+INSERT INTO actions (id, tenant_id, case_id, trace_id, idempotency_key, tool_key, risk_level, input, status) VALUES
+  ('93000000-0000-0000-0000-000000000009', '10000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001',
+   gen_random_uuid(), 'post-expire', 'invoice_post_to_accounting', 'write', '{"bill":"X-2"}', 'pending_approval');
+INSERT INTO approval_requests (id, tenant_id, case_id, subject_type, subject_id, reason) VALUES
+  ('94000000-0000-0000-0000-000000000009', '10000000-0000-0000-0000-000000000001', '92000000-0000-0000-0000-000000000001',
+   'action', '93000000-0000-0000-0000-000000000009', 'Post invoice');
+UPDATE approval_requests SET sla_due_at = clock_timestamp() - interval '1 second'
+ WHERE id = '94000000-0000-0000-0000-000000000009';
+SELECT pg_temp.expect_value('expiring an action approval returns true',
+  $q$SELECT public.expire_approval_request('94000000-0000-0000-0000-000000000009')::text$q$, 'true');
+SELECT pg_temp.expect_value('expiring an action approval cancels the action and logs audit entries',
+  $q$SELECT (
+       (SELECT status FROM approval_requests WHERE id='94000000-0000-0000-0000-000000000009') = 'expired'
+       AND (SELECT status FROM actions WHERE id='93000000-0000-0000-0000-000000000009') = 'cancelled'
+       AND EXISTS (SELECT 1 FROM audit_log WHERE entity_type='approval_request' AND entity_id='94000000-0000-0000-0000-000000000009' AND event_type='approval.expired')
+       AND EXISTS (
+         SELECT 1 FROM audit_log l JOIN actions a ON a.id='93000000-0000-0000-0000-000000000009'
+          WHERE l.entity_type='action' AND l.entity_id=a.id AND l.event_type='action.cancelled'
+            AND l.trace_id=a.trace_id AND l.details->>'reason'='approval_expired'
+            AND l.details->>'approval_request_id'='94000000-0000-0000-0000-000000000009'
+       )
+     )::text$q$, 'true');
+ROLLBACK TO SAVEPOINT write_action_expiry;
+
 \echo
 \echo '== 4. Execution: claims, concurrency, state machine =='
 SELECT pg_temp.expect_error('executing requires a claim (worker + lease)',
@@ -202,6 +227,7 @@ SELECT pg_temp.expect_error('approved draft text is frozen',
 \ir approval_freshness_checks.sql
 \ir single_reply_review_checks.sql
 \ir read_lookup_identity_checks.sql
+\ir order_refund_checks.sql
 
 \echo
 \echo '== 7. Audit log =='
