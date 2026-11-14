@@ -50,17 +50,20 @@ verify the sender, and `input_unavailable` means no validated extraction supplie
 Failure modes: a result that does not match the tool's output schema returns 422 and leaves the
 action executing until its lease expires; reconcile it like any other mock action. A failed or
 unknown lookup stays in `waiting` with its status because lookup keys are fixed per message.
+If a lookup completes while `/drafts` waits for the model, `/drafts` returns 409
+`Draft evidence changed`; call it again to draft from the new result.
 
 ## Offline drafting
 
 Apply migration 018 and set `SWITCHBOARD_DRAFT_CREDENTIALS` to a JSON list of tenant IDs and
 dedicated 64-character hex bearer tokens. After `/understand`, call `POST /drafts` with the case
 and latest inbound message IDs. The offline alias receives redacted customer text and retrieved
-knowledge in separate untrusted-data blocks. This slice uses pack knowledge citations.
-Tool-result ingestion and citation support can follow the tool workflow slice.
+knowledge in separate untrusted-data blocks. Completed lookups whose pack entry declares an
+`evidence` template appear first in that block, as `tool:<action id>` sentences (ADR 0020).
 
 Core checks all cited IDs against the retrieved set. Automatic drafting requires an exact
-sentence from the cited knowledge, no detected PII or sensitive order reference, no detected
+sentence from the cited evidence, no detected PII, no order reference unless it appears in a
+cited tool result, no detected
 unsupported promise or injection, and a passing tone check. These offline heuristics need
 evaluation before use with customer data. Invalid citations or failed checks leave the draft
 pending. If the model returns no usable result, the endpoint returns a review reason without

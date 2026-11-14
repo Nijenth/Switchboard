@@ -38,7 +38,7 @@ Order data can reach rules only after the sender's email matched the order. Emai
 addresses can be spoofed, so real adapters must require the provider's SPF/DKIM pass before an
 email-based identity check counts; the mock adapter trusts the fixture. A lookup that fails or
 ends in an unknown outcome stays reported as waiting, because its idempotency key is fixed;
-retry policy for read tools is pending. Drafts cannot yet cite tool results.
+retry policy for read tools is pending. ADR 0020 adds draft citations of tool results.
 
 In n8n, `wf_case_pipeline` calls `wf_lookups_run` between understanding and retrieval. The runner
 asks `/lookups` twice, because identity-gated tools appear only after the identity check, and
