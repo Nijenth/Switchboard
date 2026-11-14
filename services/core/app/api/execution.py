@@ -189,7 +189,9 @@ def execution_router(
         return {"status": status}
 
     @router.get("/reconciliation/pending")
-    def reconciliation_pending(credential: Annotated[Credential, Depends(reconciler)]) -> object:
+    def reconciliation_pending(
+        credential: Annotated[Credential, Depends(reconciler)], tool_key: str = "send_reply"
+    ) -> object:
         return transition(
             credential,
             """
@@ -197,27 +199,38 @@ def execution_router(
               FROM (SELECT id AS action_id, tenant_id, trace_id
                       FROM public.actions
                      WHERE tenant_id = %s AND adapter = 'mock'
+                       AND tool_key = %s
                        AND (status = 'unknown_outcome' OR
                             (status = 'executing' AND lease_expires_at <= clock_timestamp()))
-                       AND tool_key = 'send_reply'
                      ORDER BY lease_expires_at, id LIMIT 100) item
             """,
-            (credential.tenant_id,),
+            (credential.tenant_id, tool_key),
         )
 
-    @router.get("/dispatch/send-reply")
-    def dispatch_pending(credential: Annotated[Credential, Depends(worker)]) -> object:
+    @router.get("/dispatch/{tool_key}")
+    def dispatch_pending(
+        tool_key: str, credential: Annotated[Credential, Depends(worker)]
+    ) -> object:
         return transition(
             credential,
             """
             SELECT coalesce(jsonb_agg(jsonb_build_object('action_id', item.id)), '[]'::jsonb)
-              FROM (SELECT id FROM public.actions
-                     WHERE tenant_id = %s AND adapter = 'mock' AND tool_key = 'send_reply'
-                       AND (status = 'approved' OR (status = 'executing' AND claimed_by = %s
+              FROM (SELECT id FROM public.actions a
+                     WHERE tenant_id = %s AND adapter = 'mock' AND tool_key = %s
+                       AND (status = 'approved' OR (status = 'proposed' AND EXISTS (
+                         SELECT 1 FROM public.policy_decisions p JOIN public.cases c
+                           ON (c.tenant_id,c.id,c.policy_revision)=(p.tenant_id,p.case_id,p.revision)
+                         WHERE (p.tenant_id,p.case_id,p.id)=(a.tenant_id,a.case_id,a.policy_decision_id)
+                           AND p.decision='auto' AND a.tool_key=ANY(p.allowed_tools)
+                       )) OR (status = 'executing' AND claimed_by = %s
                             AND lease_expires_at > clock_timestamp()))
                      ORDER BY created_at, id LIMIT 100) item
             """,
-            (credential.tenant_id, credential.principal),
+            (
+                credential.tenant_id,
+                "send_reply" if tool_key == "send-reply" else tool_key,
+                credential.principal,
+            ),
         )
 
     @router.get("/approvals/pending")
@@ -235,7 +248,7 @@ def execution_router(
                        AND s.slack_workspace_id IS NOT NULL
                        AND (r.subject_type = 'draft' OR (r.subject_type = 'action' AND EXISTS (
                          SELECT 1 FROM public.actions a WHERE (a.tenant_id,a.case_id,a.id) =
-                           (r.tenant_id,r.case_id,r.subject_id) AND a.tool_key = 'send_reply'
+                           (r.tenant_id,r.case_id,r.subject_id) AND a.adapter = 'mock'
                        )))
                      ORDER BY r.created_at,r.id LIMIT 100) item
             """,
@@ -268,7 +281,7 @@ def execution_router(
             LEFT JOIN public.drafts d ON r.subject_type = 'draft'
               AND (d.tenant_id,d.case_id,d.id) = (r.tenant_id,r.case_id,r.subject_id)
             WHERE r.tenant_id = %s AND r.id = %s AND r.status = 'pending'
-              AND (d.id IS NOT NULL OR a.tool_key = 'send_reply')
+              AND (d.id IS NOT NULL OR a.adapter = 'mock')
               AND r.sla_due_at > clock_timestamp()
               AND q.notify_channel IS NOT NULL AND s.slack_workspace_id IS NOT NULL
             """,
@@ -310,5 +323,20 @@ def execution_router(
         if saved is None:
             raise HTTPException(409, "Slack delivery could not be recorded")
         return {"status": "posted"}
+
+    @router.post("/approvals/expire")
+    def expire_approvals(credential: Annotated[Credential, Depends(poster)]) -> object:
+        return transition(
+            credential,
+            """
+            SELECT count(*) FROM (
+                SELECT public.expire_approval_request(id) AS expired
+                FROM public.approval_requests WHERE tenant_id=%s AND status='pending'
+                  AND sla_due_at <= clock_timestamp()
+                ORDER BY sla_due_at,id LIMIT 100
+            ) batch WHERE expired
+            """,
+            (credential.tenant_id,),
+        )
 
     return router

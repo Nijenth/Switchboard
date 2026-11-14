@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from app.adapters.ingest import audit
 from app.ai_accounting import set_scope
+from app.api.queue_reply import queue_reply
 from app.api.understand import Credential
 from app.engine.policy import decide
 
@@ -23,6 +24,7 @@ class DecideInput(BaseModel):
     case_id: UUID
     message_id: UUID
     proposed_tools: list[ToolKey] = Field(default_factory=list, max_length=32)
+    queue_reply: bool = False
 
 
 def publish(
@@ -279,6 +281,9 @@ def decide_router(
             raise HTTPException(403, "Decision credential is not authorized")
         try:
             with pool.connection() as conn, conn.transaction():
+                if payload.queue_reply:
+                    set_scope(conn, tenant)
+                    return queue_reply(conn, tenant, payload.case_id, payload.message_id)
                 return publish(conn, tenant, payload)
         except (Error, PoolTimeout, TooManyRequests):
             raise HTTPException(503, "Decision unavailable") from None
