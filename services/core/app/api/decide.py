@@ -159,10 +159,12 @@ def publish(
     checks: dict[str, Any] = {}
     for (output,) in conn.execute(
         """
-        SELECT a.output FROM public.actions a
+        SELECT a.output FROM public.actions a JOIN public.tools t ON t.key=a.tool_key AND t.active
         WHERE a.tenant_id=%s AND a.case_id=%s AND a.message_id=%s AND a.risk_level='read'
           AND a.status='executed' AND jsonb_typeof(a.output)='object'
-          AND (a.tool_key <> 'order_lookup' OR public.order_identity_is_verified(a))
+          AND (NOT public.requires_order_identity(a,t) OR public.order_identity_is_verified(a))
+          AND (a.tool_key <> 'order_identity_check' OR public.order_identity_input_matches(a))
+          AND (a.tool_key <> 'order_lookup' OR public.valid_order_lookup_output(a.output))
         ORDER BY a.executed_at, a.id
         """,
         message_scope[:3],

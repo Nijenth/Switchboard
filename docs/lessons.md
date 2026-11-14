@@ -9,3 +9,7 @@
 
 - The pinned n8n CLI reported a successful publish while a subsequent sub-workflow call could not see a published version. The CLI updates the active version, while publication-service mode reads a separate publication record. Use consistent publication settings and verify a child call in the disposable harness.
 - The grant replacement regression exposed an ambiguous `revision` reference that PostgreSQL resolved only when the function reached the affected statement. Use distinct names for PL/pgSQL variables and table columns, and exercise each authorization path through the restricted login.
+
+## Order tool authorization
+
+- The identity follow-up reproduced refund claims for a different order using the case-wide verification flag under migration 021's rules. Migration 022 checks message and order identity at both claim and consumption. Include a test for grants issued before an authorization change, since a claim check cannot govern grants already issued.

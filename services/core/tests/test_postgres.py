@@ -1486,6 +1486,21 @@ def test_lookups_verify_identity_before_reading_order_data(
         check = first["pending"][0]["action_id"]
         assert api.post("/lookups", json=body, headers=bearer(lookup_token)).json() == first
 
+        with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+            verify_cluster(conn, "switchboard_core")
+            set_northwind(conn)
+            with (
+                pytest.raises(
+                    psycopg.errors.CheckViolation, match="requires the inbound message sender"
+                ),
+                conn.transaction(),
+            ):
+                conn.execute(
+                    """UPDATE public.actions SET input=input || %s::jsonb
+                       WHERE tenant_id=%s AND id=%s""",
+                    (dumps({"sender_email": "other@example.test"}), NORTHWIND, check),
+                )
+
         # Read actions cannot complete without output or with order_found=false & identity_verified=true.
         claimed = api.post(f"/actions/{check}/claim", headers=worker).json()
         api.post(f"/actions/{check}/consume", headers=worker, json={"grant": claimed["grant"]})
@@ -1531,6 +1546,37 @@ def test_lookups_verify_identity_before_reading_order_data(
             },
         )
         assert completed.status_code == 200, completed.text
+
+        with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+            verify_cluster(conn, "switchboard_core")
+            set_northwind(conn)
+            refund_actions = conn.execute(
+                """INSERT INTO public.actions
+                     (tenant_id,case_id,message_id,trace_id,idempotency_key,tool_key,risk_level,input,
+                      status)
+                   SELECT m.tenant_id,m.case_id,m.id,m.trace_id,
+                          'refund-eligibility:' || m.id || ':' || input::text,
+                          'refund_eligibility_check','read',input,'proposed'
+                   FROM public.messages m CROSS JOIN (VALUES
+                     ('{"order_number":"NW-1001"}'::jsonb), ('{"order_number":"NW-1002"}'), ('{}')
+                   ) v(input)
+                   WHERE m.tenant_id=%s AND m.id=%s
+                   RETURNING input,id""",
+                (NORTHWIND, body["message_id"]),
+            ).fetchall()
+        assert len(refund_actions) == 3
+        refund_action = next(
+            action_id
+            for payload, action_id in refund_actions
+            if payload == {"order_number": "NW-1001"}
+        )
+        for payload, action_id in refund_actions:
+            refund_claim = api.post(f"/actions/{action_id}/claim", headers=worker)
+            if payload != {"order_number": "NW-1001"}:
+                assert refund_claim.status_code == 409, refund_claim.text
+            else:
+                assert refund_claim.status_code == 200, refund_claim.text
+                refund_grant = refund_claim.json()["grant"]
 
         second = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert second["completed"] == ["order_identity_check"]
@@ -1621,6 +1667,12 @@ def test_lookups_verify_identity_before_reading_order_data(
             thread_round1["pending"][0]["action_id"],
             {"order_found": True, "identity_verified": False},
         )
+        assert (
+            api.post(
+                f"/actions/{refund_action}/consume", headers=worker, json={"grant": refund_grant}
+            ).status_code
+            == 409
+        )
         thread_round2 = api.post("/lookups", json=same_thread, headers=bearer(lookup_token)).json()
         assert thread_round2["pending"] == []
         assert thread_round2["completed"] == ["order_identity_check"]
@@ -1653,6 +1705,23 @@ def test_lookups_verify_identity_before_reading_order_data(
             json={"grant": nw1004_claim["grant"]},
         )
         # Arbitrary carrier or tracking_number text is refused by the strict schema.
+        assert (
+            api.post(
+                f"/actions/{nw1004_lookup}/complete",
+                headers=worker,
+                json={
+                    "grant": nw1004_claim["grant"],
+                    "external_ref": "order:NW-1004",
+                    "output": {
+                        "order_status": "delivered",
+                        "carrier": "FedEx",
+                        "tracking_number": "771200000000004",
+                        "estimated_delivery_at": "2026-02-30T15:30:00Z",
+                    },
+                },
+            ).status_code
+            == 422
+        )
         assert (
             api.post(
                 f"/actions/{nw1004_lookup}/complete",
