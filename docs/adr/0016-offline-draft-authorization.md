@@ -18,5 +18,10 @@ as the draft. PostgreSQL requires a nonempty citation array and both guardrail p
 matching payload for automatic reply authorization. The existing human approval path
 retains its own exact-payload binding. The API does not create or dispatch a send action.
 
+The database verifies the recorded guardrail results for the exact payload. It relies on core
+to run the checks and record their results accurately. G7 uses shallow patterns and can miss
+wording such as “We'll refund.” Automatic replies remain limited to a verbatim single-sentence
+quote until a real eval.
+
 The existing live-draft index prevents duplicate live rows. A concurrent draft request can
 make a redundant fixture call before final persistence returns the existing draft.
