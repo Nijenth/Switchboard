@@ -1,0 +1,441 @@
+{
+  "id": "SwitchboardLookups1",
+  "name": "wf_lookups_run",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardLookups1-1",
+      "name": "Receive lookup request",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-config",
+      "name": "Load service URLs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        120,
+        -150
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-1a",
+      "name": "Request lookups",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/lookups' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({case_id: $('Receive lookup request').first().json.case_id, message_id: $('Receive lookup request').first().json.message_id}) }}",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardLookupAuth",
+          "name": "Switchboard Lookup"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-1b",
+      "name": "List pending lookups",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Tool workflows run the pack's lookups; core decides which ones are pending.\nconst workflows = {order_identity_check: 'SwitchboardIdentity1', order_lookup: 'SwitchboardOrder1'};\nreturn ($input.first().json.pending ?? []).map(({action_id, tool_key}) => {\n  if (!workflows[tool_key]) throw new Error('No tool workflow for ' + tool_key);\n  return {json: {action_id, tool_key, workflow_id: workflows[tool_key]}};\n});"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "SwitchboardLookups1-1c",
+      "name": "Any pending lookups",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "SwitchboardLookups1-1-pending",
+              "leftValue": "={{ $json.action_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-1d",
+      "name": "Run lookup tool",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "={{ $json.workflow_id }}",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-1e",
+      "name": "Lookup round 1 done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "return [{json: {round: 1}}];"
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-2a",
+      "name": "Request lookups again",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/lookups' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({case_id: $('Receive lookup request').first().json.case_id, message_id: $('Receive lookup request').first().json.message_id}) }}",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardLookupAuth",
+          "name": "Switchboard Lookup"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-2b",
+      "name": "List pending lookups again",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Tool workflows run the pack's lookups; core decides which ones are pending.\nconst workflows = {order_identity_check: 'SwitchboardIdentity1', order_lookup: 'SwitchboardOrder1'};\nreturn ($input.first().json.pending ?? []).map(({action_id, tool_key}) => {\n  if (!workflows[tool_key]) throw new Error('No tool workflow for ' + tool_key);\n  return {json: {action_id, tool_key, workflow_id: workflows[tool_key]}};\n});"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "SwitchboardLookups1-2c",
+      "name": "Any pending lookups again",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "SwitchboardLookups1-2-pending",
+              "leftValue": "={{ $json.action_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-2d",
+      "name": "Run lookup tool again",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2160,
+        -120
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "={{ $json.workflow_id }}",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-2e",
+      "name": "Lookup round 2 done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        -120
+      ],
+      "parameters": {
+        "jsCode": "return [{json: {round: 2}}];"
+      }
+    },
+    {
+      "id": "SwitchboardLookups1-9",
+      "name": "Lookups finished",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json: {done: true}}];"
+      }
+    }
+  ],
+  "connections": {
+    "Receive lookup request": {
+      "main": [
+        [
+          {
+            "node": "Load service URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load service URLs": {
+      "main": [
+        [
+          {
+            "node": "Request lookups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request lookups": {
+      "main": [
+        [
+          {
+            "node": "List pending lookups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List pending lookups": {
+      "main": [
+        [
+          {
+            "node": "Any pending lookups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any pending lookups": {
+      "main": [
+        [
+          {
+            "node": "Run lookup tool",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Request lookups again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run lookup tool": {
+      "main": [
+        [
+          {
+            "node": "Lookup round 1 done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup round 1 done": {
+      "main": [
+        [
+          {
+            "node": "Request lookups again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request lookups again": {
+      "main": [
+        [
+          {
+            "node": "List pending lookups again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List pending lookups again": {
+      "main": [
+        [
+          {
+            "node": "Any pending lookups again",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any pending lookups again": {
+      "main": [
+        [
+          {
+            "node": "Run lookup tool again",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Lookups finished",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run lookup tool again": {
+      "main": [
+        [
+          {
+            "node": "Lookup round 2 done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup round 2 done": {
+      "main": [
+        [
+          {
+            "node": "Lookups finished",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

@@ -10,8 +10,10 @@ It imports no credentials. Keep Gmail and schedules inactive while inspecting th
 HTTP nodes use named Header Auth credentials with header name `Authorization` and a bearer
 value scoped to the node's endpoint. The mock PostgreSQL nodes use the separate mock login.
 Edit the core base URL in `wf_service_urls` for your running core and Slack fixture. The
-checkpoint service uses its own URL. Publish the service URL subworkflow when testing
-execution. Keep node environment access blocked. The disposable harness binds
+checkpoint service uses its own URL. Publish the subworkflows when testing execution:
+`wf_service_urls`, `wf_lookups_run`, `wf_tool_order_identity_check`, `wf_tool_order_lookup` and
+`wf_tool_send_reply`. The lookup runner uses a "Switchboard Lookup" Header Auth credential scoped
+to `/lookups`. Keep node environment access blocked. The disposable harness binds
 generated credentials and loopback fixture URLs automatically.
 
 To refresh the editor from Git, first preview or save any local edits. The import replaces

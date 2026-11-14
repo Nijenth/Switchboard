@@ -109,7 +109,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         pytest.skip("run scripts/test_core.ps1 -WithN8n")
     base = Settings.from_environment()
     tokens = {role: token_hex(32) for role in ("worker", "reconciler", "approval_poster")}
-    ingress, understand, retrieve, draft, decide = (token_hex(32) for _ in range(5))
+    ingress, understand, retrieve, draft, decide, lookup = (token_hex(32) for _ in range(6))
 
     def scope(token: str) -> str:
         return json.dumps([{"tenant_id": str(NORTHWIND), "token": token}])
@@ -127,6 +127,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         retrieve_credentials=scope(retrieve),
         draft_credentials=scope(draft),
         decide_credentials=scope(decide),
+        lookup_credentials=scope(lookup),
     )
     request_id, action_id, policy_id, draft_id = (uuid4() for _ in range(4))
     refund_review = uuid4()
@@ -348,6 +349,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                             "Retrieve": retrieve,
                             "Draft": draft,
                             "Decide": decide,
+                            "Lookup": lookup,
                         }.items()
                     ],
                 ]
@@ -433,11 +435,17 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             n8n("execute", "--id=SwitchboardDispatch1")
             n8n("execute", "--id=SwitchboardAudit1")
             if config.offline_gateway_url:
-                n8n("publish:workflow", "--id=SwitchboardCase1")
+                for workflow_id in (
+                    "SwitchboardIdentity1",
+                    "SwitchboardOrder1",
+                    "SwitchboardLookups1",
+                    "SwitchboardCase1",
+                ):
+                    n8n("publish:workflow", f"--id={workflow_id}")
                 n8n("execute", "--id=SwitchboardEmail1")
                 posted.clear()
                 n8n("execute", "--id=SwitchboardSlack1")
-                assert len(posted) == 1
+                assert len(posted) == 2
                 for review_id in sorted(posted):
                     interaction(core, review_id)
                 n8n("execute", "--id=SwitchboardDispatch1")
@@ -453,6 +461,32 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                         """,
                         (NORTHWIND,),
                     ).fetchall() == [("executed", "sent")]
+                    # The order email ran its lookups: identity first, then the order itself.
+                    lookups = conn.execute(
+                        """
+                        SELECT a.tool_key,a.status,c.identity_verified FROM public.messages m
+                        JOIN public.cases c ON (c.tenant_id,c.id)=(m.tenant_id,m.case_id)
+                        JOIN public.actions a ON (a.tenant_id,a.message_id)=(m.tenant_id,m.id)
+                        WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-order-1'
+                          AND a.risk_level='read' ORDER BY a.created_at
+                        """,
+                        (NORTHWIND,),
+                    ).fetchall()
+                    assert lookups == [
+                        ("order_identity_check", "executed", True),
+                        ("order_lookup", "executed", True),
+                    ]
+                    checks = conn.execute(
+                        """
+                        SELECT p.inputs->'checks' FROM public.messages m
+                        JOIN public.policy_decisions p ON (p.tenant_id,p.message_id)=(m.tenant_id,m.id)
+                        WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-order-1'
+                        ORDER BY p.revision DESC LIMIT 1
+                        """,
+                        (NORTHWIND,),
+                    ).fetchone()
+                    assert checks is not None
+                    assert (checks[0]["order_status"], checks[0]["carrier"]) == ("shipped", "UPS")
             checkpoints = [
                 json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()
             ]

@@ -101,12 +101,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        960,
+        1440,
         0
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Load service URLs').item.json.core_base_url + '/retrieve' }}",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/retrieve' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -119,7 +119,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id})) }}"
+        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').first().json.case_id,message_id:$('Ingest email').first().json.message_id})) }}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -134,12 +134,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1200,
+        1680,
         0
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Load service URLs').item.json.core_base_url + '/drafts' }}",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/drafts' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -152,7 +152,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id})) }}"
+        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').first().json.case_id,message_id:$('Ingest email').first().json.message_id})) }}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -167,12 +167,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1440,
+        1920,
         0
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Load service URLs').item.json.core_base_url + '/decide' }}",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/decide' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {
@@ -185,7 +185,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(({...({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id}),queue_reply:true})) }}"
+        "jsonBody": "={{ JSON.stringify(({...({case_id:$('Ingest email').first().json.case_id,message_id:$('Ingest email').first().json.message_id}),queue_reply:true})) }}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -207,6 +207,40 @@
         "workflowId": {
           "__rl": true,
           "value": "SwitchboardConfig1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "SwitchboardCase1-lookup-request",
+      "name": "Prepare lookup request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const ingested = $('Ingest email').first().json;\nreturn [{json: {case_id: ingested.case_id, message_id: ingested.message_id}}];"
+      }
+    },
+    {
+      "id": "SwitchboardCase1-lookups",
+      "name": "Run lookups",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardLookups1",
           "mode": "id"
         },
         "mode": "each",
@@ -254,7 +288,7 @@
       "main": [
         [
           {
-            "node": "Retrieve knowledge",
+            "node": "Prepare lookup request",
             "type": "main",
             "index": 0
           }
@@ -288,6 +322,28 @@
         [
           {
             "node": "Ingest email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare lookup request": {
+      "main": [
+        [
+          {
+            "node": "Run lookups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run lookups": {
+      "main": [
+        [
+          {
+            "node": "Retrieve knowledge",
             "type": "main",
             "index": 0
           }
