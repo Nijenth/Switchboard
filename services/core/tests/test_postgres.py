@@ -1565,18 +1565,9 @@ def test_lookups_verify_identity_before_reading_order_data(
                 (NORTHWIND, body["message_id"]),
             ).fetchall()
         assert len(refund_actions) == 3
-        refund_action = next(
-            action_id
-            for payload, action_id in refund_actions
-            if payload == {"order_number": "NW-1001"}
-        )
-        for payload, action_id in refund_actions:
+        for _, action_id in refund_actions:
             refund_claim = api.post(f"/actions/{action_id}/claim", headers=worker)
-            if payload != {"order_number": "NW-1001"}:
-                assert refund_claim.status_code == 409, refund_claim.text
-            else:
-                assert refund_claim.status_code == 200, refund_claim.text
-                refund_grant = refund_claim.json()["grant"]
+            assert refund_claim.status_code == 409, refund_claim.text
 
         second = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert second["completed"] == ["order_identity_check"]
@@ -1666,12 +1657,6 @@ def test_lookups_verify_identity_before_reading_order_data(
             api,
             thread_round1["pending"][0]["action_id"],
             {"order_found": True, "identity_verified": False},
-        )
-        assert (
-            api.post(
-                f"/actions/{refund_action}/consume", headers=worker, json={"grant": refund_grant}
-            ).status_code
-            == 409
         )
         thread_round2 = api.post("/lookups", json=same_thread, headers=bearer(lookup_token)).json()
         assert thread_round2["pending"] == []

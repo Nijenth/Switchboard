@@ -65,10 +65,10 @@ def propose_lookups(conn: Connection[Any], tenant: UUID, request: LookupInput) -
     ).fetchone()
     extraction = extracted[0] if extracted and isinstance(extracted[0], dict) else {}
     tools = {
-        key: (requires_identity, schema)
-        for key, requires_identity, schema in conn.execute(
+        key: (requires_identity, order_scoped, schema)
+        for key, requires_identity, order_scoped, schema in conn.execute(
             """
-            SELECT t.key,t.requires_verified_identity,t.input_schema
+            SELECT t.key,t.requires_verified_identity,public.is_order_scoped_tool(t),t.input_schema
             FROM public.pack_tools pt JOIN public.tools t ON t.key=pt.tool_key AND t.active
             WHERE pt.pack_id=%s AND t.risk_level='read'
             """,
@@ -85,7 +85,7 @@ def propose_lookups(conn: Connection[Any], tenant: UUID, request: LookupInput) -
         if not isinstance(key, str) or key not in tools:
             waiting.append({"tool_key": str(key), "reason": "tool_unavailable"})
             continue
-        requires_identity, schema = tools[key]
+        requires_identity, order_scoped, schema = tools[key]
         sources = entry.get("input", {})
         payload = {name: resolve(source, extraction, sender) for name, source in sources.items()}
         if (
@@ -97,19 +97,16 @@ def propose_lookups(conn: Connection[Any], tenant: UUID, request: LookupInput) -
             waiting.append({"tool_key": key, "reason": "input_unavailable"})
             continue
         order_number = payload.get("order_number")
-        identity_ok = (
-            bool(
-                verified
-                and conn.execute(
-                    "SELECT public.order_identity_is_verified(%s,%s,%s,%s)",
-                    (tenant, request.case_id, request.message_id, order_number),
-                ).fetchone()
-                == (True,)
-            )
-            if isinstance(order_number, str)
-            else bool(verified)
-        )
-        if requires_identity and not identity_ok:
+        if requires_identity and not (
+            order_scoped
+            and verified
+            and isinstance(order_number, str)
+            and conn.execute(
+                "SELECT public.order_identity_is_verified(%s,%s,%s,%s)",
+                (tenant, request.case_id, request.message_id, order_number),
+            ).fetchone()
+            == (True,)
+        ):
             waiting.append({"tool_key": key, "reason": "identity_unverified"})
             continue
         idempotency_key = f"lookup:{request.message_id}:{key}"

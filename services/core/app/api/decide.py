@@ -123,6 +123,15 @@ def publish(
         """,
         message_scope[:3],
     ).fetchone()
+    registry_tools = conn.execute(
+        """
+        SELECT t.key,t.risk_level,t.requires_verified_identity,pt.approval_role,t.output_schema,
+               public.is_identity_check_tool(t),public.is_order_scoped_tool(t)
+        FROM public.pack_tools pt JOIN public.tools t ON t.key=pt.tool_key
+        WHERE pt.pack_id=%s
+        """,
+        (pack_id,),
+    ).fetchall()
     tools = {
         key: {
             "risk_level": risk,
@@ -130,14 +139,7 @@ def publish(
             "approval_role": role,
             "check_fields": list(schema.get("properties", {})),
         }
-        for key, risk, identity, role, schema in conn.execute(
-            """
-            SELECT t.key,t.risk_level,t.requires_verified_identity,pt.approval_role,t.output_schema
-            FROM public.pack_tools pt JOIN public.tools t ON t.key=pt.tool_key
-            WHERE pt.pack_id=%s
-            """,
-            (pack_id,),
-        )
+        for key, risk, identity, role, schema, _, _ in registry_tools
     }
     proposed = set(payload.proposed_tools)
     if proposed - tools.keys():
@@ -162,9 +164,8 @@ def publish(
         SELECT a.output FROM public.actions a JOIN public.tools t ON t.key=a.tool_key AND t.active
         WHERE a.tenant_id=%s AND a.case_id=%s AND a.message_id=%s AND a.risk_level='read'
           AND a.status='executed' AND jsonb_typeof(a.output)='object'
-          AND (NOT public.requires_order_identity(a,t) OR public.order_identity_is_verified(a))
-          AND (a.tool_key <> 'order_identity_check' OR public.order_identity_input_matches(a))
-          AND (a.tool_key <> 'order_lookup' OR public.valid_order_lookup_output(a.output))
+          AND public.tool_identity_authorized(a,t)
+          AND (NOT t.requires_verified_identity OR public.valid_tool_output(t.output_schema,a.output))
         ORDER BY a.executed_at, a.id
         """,
         message_scope[:3],
@@ -172,7 +173,7 @@ def publish(
         checks.update(output)
     extraction_data = extracted[1] if extracted and isinstance(extracted[1], dict) else {}
     order_number = extraction_data.get("order_number")
-    if "order_identity_check" in tools:
+    if any(identity_check or order_scoped for *_, identity_check, order_scoped in registry_tools):
         verified = bool(
             verified
             and isinstance(order_number, str)
@@ -182,6 +183,11 @@ def publish(
             ).fetchone()
             == (True,)
         )
+    if any(
+        identity and not order_scoped and key in proposed
+        for key, _, identity, _, _, _, order_scoped in registry_tools
+    ):
+        verified = False
     context = {
         "case": {
             "id": str(payload.case_id),

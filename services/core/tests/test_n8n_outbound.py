@@ -130,8 +130,8 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         lookup_credentials=scope(lookup),
     )
     request_id, action_id, policy_id, draft_id = (uuid4() for _ in range(4))
-    refund_review = uuid4()
-    refund_case = uuid4()
+    payment_review = uuid4()
+    payment_case = uuid4()
     with psycopg.connect(
         host=config.db_host,
         port=config.db_port,
@@ -202,21 +202,21 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                SELECT %s,e.tenant_id,e.tenant_pack_id,tp.pack_id,e.channel,q.id,e.id
                FROM public.channel_endpoints e JOIN public.tenant_packs tp
                  ON (tp.tenant_id,tp.id)=(e.tenant_id,e.tenant_pack_id)
-               JOIN public.queues q ON q.tenant_id=e.tenant_id AND q.key='customer_support'
-               WHERE e.tenant_id=%s AND e.address='support@northwind.example'""",
-            (refund_case, NORTHWIND),
+               JOIN public.queues q ON q.tenant_id=e.tenant_id AND q.key='accounts_payable'
+               WHERE e.tenant_id=%s AND e.address='invoices@northwind.example'""",
+            (payment_case, NORTHWIND),
         )
         conn.execute(
             """INSERT INTO public.actions
                (id,tenant_id,case_id,trace_id,idempotency_key,tool_key,risk_level,status,amount,currency)
-               SELECT %s,tenant_id,id,%s,%s,'refund_issue','money','pending_approval',5,'USD'
+               SELECT %s,tenant_id,id,%s,%s,'invoice_schedule_payment','money','pending_approval',5,'USD'
                FROM public.cases WHERE tenant_id=%s AND id=%s""",
-            (refund_review, uuid4(), str(refund_review), NORTHWIND, refund_case),
+            (payment_review, uuid4(), str(payment_review), NORTHWIND, payment_case),
         )
         conn.execute(
             """INSERT INTO public.approval_requests (id,tenant_id,case_id,subject_type,subject_id,reason)
-               VALUES (%s,%s,%s,'action',%s,'Fixture refund review')""",
-            (refund_review, NORTHWIND, refund_case, refund_review),
+               VALUES (%s,%s,%s,'action',%s,'Fixture payment review')""",
+            (payment_review, NORTHWIND, payment_case, payment_review),
         )
 
     app = create_app(config)
@@ -409,7 +409,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             n8n("publish:workflow", "--id=SwitchboardSend1")
             n8n("publish:workflow", "--id=SwitchboardConfig1")
             n8n("execute", "--id=SwitchboardSlack1")
-            assert posted == {str(request_id), str(action_review_id), str(refund_review)}
+            assert posted == {str(request_id), str(action_review_id), str(payment_review)}
             interaction(core, request_id)
             interaction(core, action_review_id)
             worker_name = "switchboard-crash-" + uuid4().hex
