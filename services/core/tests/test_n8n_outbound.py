@@ -7,6 +7,7 @@ import sys
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from hashlib import sha256
 from hmac import digest
 from pathlib import Path
 from secrets import token_hex
@@ -22,7 +23,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
-from test_postgres import CASE_ID, FINANCE, NORTHWIND, set_northwind, verify_cluster
+from test_postgres import CASE_ID, NORTHWIND, set_northwind, verify_cluster
 
 from app.adapters.db import Settings, create_pool
 from app.main import create_app
@@ -30,6 +31,7 @@ from app.main import create_app
 ROOT = Path(__file__).resolve().parents[3]
 IMAGE = "docker.n8n.io/n8nio/n8n:2.46.7"
 WORKSPACE, REVIEWER, CHANNEL, MESSAGE_TS = "TWORKFLOW", "UWORKFLOW", "CWORKFLOW", "11.123456"
+ADMIN = "20000000-0000-0000-0000-000000000004"
 
 
 @contextmanager
@@ -106,6 +108,11 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         pytest.skip("run scripts/test_core.ps1 -WithN8n")
     base = Settings.from_environment()
     tokens = {role: token_hex(32) for role in ("worker", "reconciler", "approval_poster")}
+    ingress, understand, retrieve, draft, decide = (token_hex(32) for _ in range(5))
+
+    def scope(token: str) -> str:
+        return json.dumps([{"tenant_id": str(NORTHWIND), "token": token}])
+
     config = replace(
         base,
         execution_credentials=json.dumps(
@@ -115,8 +122,14 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             ]
         ),
         audit_token=token_hex(32),
+        understand_credentials=scope(understand),
+        retrieve_credentials=scope(retrieve),
+        draft_credentials=scope(draft),
+        decide_credentials=scope(decide),
     )
     request_id, action_id, policy_id, draft_id = (uuid4() for _ in range(4))
+    refund_review = uuid4()
+    refund_case = uuid4()
     with psycopg.connect(
         host=config.db_host,
         port=config.db_port,
@@ -132,11 +145,18 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         )
         loader.execute(
             "UPDATE public.staff_users SET slack_user_id=%s WHERE tenant_id=%s AND id=%s",
-            (REVIEWER, NORTHWIND, FINANCE),
+            (REVIEWER, NORTHWIND, ADMIN),
         )
         loader.execute(
-            "UPDATE public.queues SET notify_channel=%s WHERE tenant_id=%s AND key='accounts_payable'",
+            """UPDATE public.queues SET notify_channel=%s
+               WHERE tenant_id=%s AND key IN ('accounts_payable','customer_support')""",
             (CHANNEL, NORTHWIND),
+        )
+        loader.execute(
+            """INSERT INTO public.ingress_credentials (token_digest,tenant_id,endpoint_id,expires_at)
+               SELECT %s,tenant_id,id,now()+interval '30 minutes' FROM public.channel_endpoints
+               WHERE tenant_id=%s AND address='support@northwind.example'""",
+            (sha256(ingress.encode()).digest(), NORTHWIND),
         )
     with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
         set_northwind(conn)
@@ -175,6 +195,27 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             )
             if kind == "action":
                 action_review_id = review_id
+        conn.execute(
+            """INSERT INTO public.cases (id,tenant_id,tenant_pack_id,pack_id,channel,queue_id,endpoint_id)
+               SELECT %s,e.tenant_id,e.tenant_pack_id,tp.pack_id,e.channel,q.id,e.id
+               FROM public.channel_endpoints e JOIN public.tenant_packs tp
+                 ON (tp.tenant_id,tp.id)=(e.tenant_id,e.tenant_pack_id)
+               JOIN public.queues q ON q.tenant_id=e.tenant_id AND q.key='customer_support'
+               WHERE e.tenant_id=%s AND e.address='support@northwind.example'""",
+            (refund_case, NORTHWIND),
+        )
+        conn.execute(
+            """INSERT INTO public.actions
+               (id,tenant_id,case_id,trace_id,idempotency_key,tool_key,risk_level,status,amount,currency)
+               SELECT %s,tenant_id,id,%s,%s,'refund_issue','money','pending_approval',5,'USD'
+               FROM public.cases WHERE tenant_id=%s AND id=%s""",
+            (refund_review, uuid4(), str(refund_review), NORTHWIND, refund_case),
+        )
+        conn.execute(
+            """INSERT INTO public.approval_requests (id,tenant_id,case_id,subject_type,subject_id,reason)
+               VALUES (%s,%s,%s,'action',%s,'Fixture refund review')""",
+            (refund_review, NORTHWIND, refund_case, refund_review),
+        )
 
     app = create_app(config)
     posted: set[str] = set()
@@ -259,6 +300,15 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         serve(app) as core,
         checkpoint_process(history, core, config.audit_token, schedule_token) as checkpoint_url,
     ):
+        core_url = core.replace("127.0.0.1", "host.docker.internal")
+        for file in workflows.glob("*.json"):
+            source = file.read_text(encoding="utf-8")
+            source = source.replace("http://host.docker.internal:8000", core_url)
+            source = source.replace(
+                "http://host.docker.internal:8001/checkpoint",
+                checkpoint_url.replace("127.0.0.1", "host.docker.internal"),
+            )
+            file.write_text(source, encoding="utf-8")
         credentials_file = imports / "credentials.json"
         credentials_file.write_text(
             json.dumps(
@@ -275,7 +325,27 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                             "password": os.environ["SWITCHBOARD_N8N_MOCK_PASSWORD"],
                             "ssl": "disable",
                         },
-                    }
+                    },
+                    *[
+                        {
+                            "id": f"Switchboard{role}Auth",
+                            "name": f"Switchboard {role}",
+                            "type": "httpHeaderAuth",
+                            "data": {"name": "Authorization", "value": "Bearer " + secret},
+                        }
+                        for role, secret in {
+                            "Worker": tokens["worker"],
+                            "Reconciler": tokens["reconciler"],
+                            "Approval": tokens["approval_poster"],
+                            "Slack": slack_bot_token,
+                            "Checkpoint": schedule_token,
+                            "Ingress": ingress,
+                            "Understand": understand,
+                            "Retrieve": retrieve,
+                            "Draft": draft,
+                            "Decide": decide,
+                        }.items()
+                    ],
                 ]
             ),
             encoding="utf-8",
@@ -285,23 +355,12 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         try:
             n8n_env = {
                 "N8N_ENCRYPTION_KEY": token_hex(32),
-                "N8N_BLOCK_ENV_ACCESS_IN_NODE": "false",
+                "N8N_BLOCK_ENV_ACCESS_IN_NODE": "true",
                 "N8N_DIAGNOSTICS_ENABLED": "false",
                 "N8N_VERSION_NOTIFICATIONS_ENABLED": "false",
                 "N8N_USE_WORKFLOW_PUBLICATION_SERVICE": "false",
                 "EXECUTIONS_DATA_SAVE_ON_ERROR": "none",
                 "EXECUTIONS_DATA_SAVE_ON_SUCCESS": "none",
-                "SWITCHBOARD_CORE_URL": core.replace("127.0.0.1", "host.docker.internal"),
-                "SWITCHBOARD_SLACK_POST_URL": core.replace("127.0.0.1", "host.docker.internal")
-                + "/fixture/slack/chat.postMessage",
-                "SWITCHBOARD_SLACK_BOT_TOKEN": slack_bot_token,
-                "SWITCHBOARD_WORKER_TOKEN": tokens["worker"],
-                "SWITCHBOARD_RECONCILER_TOKEN": tokens["reconciler"],
-                "SWITCHBOARD_APPROVAL_POSTER_TOKEN": tokens["approval_poster"],
-                "SWITCHBOARD_CHECKPOINT_URL": checkpoint_url.replace(
-                    "127.0.0.1", "host.docker.internal"
-                ),
-                "SWITCHBOARD_CHECKPOINT_SCHEDULE_TOKEN": schedule_token,
             }
             args = [
                 "run",
@@ -341,7 +400,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             n8n("publish:workflow", "--id=SwitchboardError1")
             n8n("publish:workflow", "--id=SwitchboardSend1")
             n8n("execute", "--id=SwitchboardSlack1")
-            assert posted == {str(request_id), str(action_review_id)}
+            assert posted == {str(request_id), str(action_review_id), str(refund_review)}
             interaction(core, request_id)
             interaction(core, action_review_id)
             n8n("execute", "--id=SwitchboardDispatch1", expect_failure=True)
@@ -364,6 +423,27 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             n8n("execute", "--id=SwitchboardReconcile1")
             n8n("execute", "--id=SwitchboardDispatch1")
             n8n("execute", "--id=SwitchboardAudit1")
+            if config.offline_gateway_url:
+                n8n("publish:workflow", "--id=SwitchboardCase1")
+                n8n("execute", "--id=SwitchboardEmail1")
+                posted.clear()
+                n8n("execute", "--id=SwitchboardSlack1")
+                assert len(posted) == 2
+                for review_id in sorted(posted):
+                    interaction(core, review_id)
+                n8n("execute", "--id=SwitchboardDispatch1")
+                n8n("execute", "--id=SwitchboardSla1")
+                with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
+                    set_northwind(conn)
+                    assert conn.execute(
+                        """
+                        SELECT a.status,d.status FROM public.messages m
+                        JOIN public.drafts d ON (d.tenant_id,d.in_reply_to_message_id)=(m.tenant_id,m.id)
+                        JOIN public.actions a ON (a.tenant_id,a.execution_draft_id)=(d.tenant_id,d.id)
+                        WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-shipping-1'
+                        """,
+                        (NORTHWIND,),
+                    ).fetchall() == [("executed", "sent")]
             checkpoints = [
                 json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()
             ]

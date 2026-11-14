@@ -1,0 +1,275 @@
+{
+  "id": "SwitchboardCase1",
+  "name": "wf_case_pipeline",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardCase1-1",
+      "name": "Receive normalized email",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "SwitchboardCase1-2",
+      "name": "Prepare canonical ingress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map(({json: m}) => {\n  const trace = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.floor(Math.random() * 16);\n    return (c === 'x' ? r : ((r & 3) | 8)).toString(16);\n  });\n  return {json:{...m, trace_id:trace, channel:'email'}};\n});"
+      }
+    },
+    {
+      "id": "SwitchboardCase1-3",
+      "name": "Ingest email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/ingest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardIngressAuth",
+          "name": "Switchboard Ingress"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardCase1-4",
+      "name": "Understand message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/understand",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id})) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardUnderstandAuth",
+          "name": "Switchboard Understand"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardCase1-5",
+      "name": "Retrieve knowledge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/retrieve",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id})) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardRetrieveAuth",
+          "name": "Switchboard Retrieve"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardCase1-6",
+      "name": "Draft reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/drafts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id})) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardDraftAuth",
+          "name": "Switchboard Draft"
+        }
+      }
+    },
+    {
+      "id": "SwitchboardCase1-7",
+      "name": "Decide and queue reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/decide",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(({...({case_id:$('Ingest email').item.json.case_id,message_id:$('Ingest email').item.json.message_id}),queue_reply:true})) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardDecideAuth",
+          "name": "Switchboard Decide"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Receive normalized email": {
+      "main": [
+        [
+          {
+            "node": "Prepare canonical ingress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare canonical ingress": {
+      "main": [
+        [
+          {
+            "node": "Ingest email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest email": {
+      "main": [
+        [
+          {
+            "node": "Understand message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Understand message": {
+      "main": [
+        [
+          {
+            "node": "Retrieve knowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve knowledge": {
+      "main": [
+        [
+          {
+            "node": "Draft reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft reply": {
+      "main": [
+        [
+          {
+            "node": "Decide and queue reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

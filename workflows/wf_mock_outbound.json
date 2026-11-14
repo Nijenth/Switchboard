@@ -34,16 +34,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/dispatch/send-reply' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
-            }
-          ]
-        },
+        "url": "={{ 'http://host.docker.internal:8000' + '/actions/dispatch/send_reply' }}",
         "options": {
           "timeout": 5000,
           "redirect": {
@@ -51,6 +42,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
         }
       }
     },

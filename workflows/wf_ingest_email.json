@@ -1,0 +1,141 @@
+{
+  "id": "SwitchboardEmail1",
+  "name": "wf_ingest_email",
+  "active": false,
+  "nodes": [
+    {
+      "id": "SwitchboardEmail1-1",
+      "name": "Gmail message",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {}
+      }
+    },
+    {
+      "id": "SwitchboardEmail1-2",
+      "name": "Synthetic email",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "SwitchboardEmail1-3",
+      "name": "Gmail-shaped fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return [{json:{id:'switchboard-synthetic-shipping-1',threadId:'switchboard-synthetic-thread-1',from:{value:[{address:'fixture@example.test'}]},to:{value:[{address:'support@northwind.example'}]},text:'Do you ship internationally? I am in Canada.',subject:'International shipping',date:'2026-11-14T00:00:00Z'}}];"
+      }
+    },
+    {
+      "id": "SwitchboardEmail1-4",
+      "name": "Normalize Gmail message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map(({json: m}) => {\n  const sender = m.from?.value?.[0]?.address;\n  const endpoint = m.to?.value?.[0]?.address;\n  if (!endpoint || !m.id || !sender || typeof m.text !== 'string' || !m.date) {\n    throw new Error('Gmail message is missing full text, sender, date or ID');\n  }\n  return {json: {idempotency_key: String(m.id), external_thread_id: m.threadId ?? null,\n    external_message_id: String(m.id), sender: {address: sender}, subject: m.subject ?? null,\n    endpoint_address: endpoint, body_text: m.text, received_at: new Date(m.date).toISOString()}};\n});"
+      }
+    },
+    {
+      "id": "SwitchboardEmail1-5",
+      "name": "Run case pipeline",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "SwitchboardCase1",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail message": {
+      "main": [
+        [
+          {
+            "node": "Normalize Gmail message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthetic email": {
+      "main": [
+        [
+          {
+            "node": "Gmail-shaped fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail-shaped fixture": {
+      "main": [
+        [
+          {
+            "node": "Normalize Gmail message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Gmail message": {
+      "main": [
+        [
+          {
+            "node": "Run case pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "errorWorkflow": "SwitchboardError1"
+  },
+  "pinData": {}
+}

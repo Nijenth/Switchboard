@@ -4,10 +4,12 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/test_db_env.sh
 unset SWITCHBOARD_OFFLINE_GATEWAY_URL
 offline=false
+n8n=false
 case "${1:-}" in
     '') ;;
     --offline-ai) offline=true ;;
-    *) printf 'Usage: test_core.sh [--offline-ai]\n' >&2; exit 2 ;;
+    --offline-n8n) offline=true; n8n=true ;;
+    *) printf 'Usage: test_core.sh [--offline-ai|--offline-n8n]\n' >&2; exit 2 ;;
 esac
 
 export SWITCHBOARD_CORE_TEST_MARKER SWITCHBOARD_HEALTH_TOKEN SWITCHBOARD_SLACK_SIGNING_SECRET
@@ -16,6 +18,9 @@ SWITCHBOARD_HEALTH_TOKEN=$(openssl rand -hex 32)
 SWITCHBOARD_SLACK_SIGNING_SECRET=$(openssl rand -hex 32)
 export SWITCHBOARD_SLACK_APP_ID=A000FIXTURE
 unset SWITCHBOARD_TEST_N8N
+if [[ $n8n == true ]]; then
+    export SWITCHBOARD_TEST_N8N=1
+fi
 
 export SWITCHBOARD_CORE_TEST_GATEWAY
 SWITCHBOARD_CORE_TEST_GATEWAY=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')

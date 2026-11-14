@@ -35,16 +35,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.SWITCHBOARD_CHECKPOINT_URL }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_CHECKPOINT_SCHEDULE_TOKEN }}"
-            }
-          ]
-        },
+        "url": "http://host.docker.internal:8001/checkpoint",
         "options": {
           "timeout": 15000,
           "redirect": {
@@ -52,6 +43,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardCheckpointAuth",
+          "name": "Switchboard Checkpoint"
         }
       }
     }

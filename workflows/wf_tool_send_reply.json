@@ -27,16 +27,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $('Receive action ID').item.json.action_id + '/claim' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
-            }
-          ]
-        },
+        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $('Receive action ID').item.json.action_id + '/claim' }}",
         "options": {
           "timeout": 5000,
           "response": {
@@ -50,6 +41,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
         }
       }
     },
@@ -77,16 +76,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $('Receive action ID').item.json.action_id + '/consume' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
-            }
-          ]
-        },
+        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $('Receive action ID').item.json.action_id + '/consume' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({grant: $json.grant}) }}",
@@ -103,6 +93,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
         }
       }
     },
@@ -147,16 +145,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_WORKER_TOKEN }}"
-            }
-          ]
-        },
+        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: $json.external_ref}) }}",
@@ -167,6 +156,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardWorkerAuth",
+          "name": "Switchboard Worker"
         }
       }
     }

@@ -34,16 +34,7 @@
       ],
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/reconciliation/pending' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_RECONCILER_TOKEN }}"
-            }
-          ]
-        },
+        "url": "={{ 'http://host.docker.internal:8000' + '/actions/reconciliation/pending' }}",
         "options": {
           "timeout": 5000,
           "redirect": {
@@ -51,6 +42,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardReconcilerAuth",
+          "name": "Switchboard Reconciler"
         }
       }
     },
@@ -82,16 +81,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.SWITCHBOARD_CORE_URL + '/actions/' + $json.action_id + '/reconcile' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.SWITCHBOARD_RECONCILER_TOKEN }}"
-            }
-          ]
-        },
+        "url": "={{ 'http://host.docker.internal:8000' + '/actions/' + $json.action_id + '/reconcile' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.external_ref ? {outcome: 'found', lookup_ref: 'mock-outbound:' + $json.action_id, external_ref: $json.external_ref} : {outcome: 'absent', lookup_ref: 'mock-outbound:' + $json.action_id}) }}",
@@ -108,6 +98,14 @@
               "followRedirects": false
             }
           }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardReconcilerAuth",
+          "name": "Switchboard Reconciler"
         }
       }
     },
