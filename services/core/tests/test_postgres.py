@@ -101,6 +101,82 @@ def test_health_uses_actual_core_login(client: TestClient, settings: Settings) -
     assert client.get("/health", headers=bearer(settings.health_token)).status_code == 200
 
 
+def test_retrieve_ranks_and_scopes_pinned_pack_knowledge(
+    client: TestClient, credentials: dict[str, str], settings: Settings
+) -> None:
+    phrase = "International orders ship to Canada. How long does delivery take?"
+    delivery = client.post(
+        "/ingest",
+        json={**make_payload(SUPPORT), "body_text": phrase},
+        headers=bearer(credentials[SUPPORT]),
+    )
+    assert delivery.status_code == 200
+    message = delivery.json()
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_config_loader",
+        password=environ["SWITCHBOARD_CONFIG_LOADER_PASSWORD"],
+        connect_timeout=3,
+    ) as conn:
+        verify_cluster(conn, "switchboard_config_loader")
+        for tenant, pack, version, status in (
+            (ACME, "ecommerce_support", 1, "active"),
+            (NORTHWIND, "ecommerce_support", 2, "active"),
+            (NORTHWIND, "ecommerce_support", 1, "archived"),
+            (NORTHWIND, "invoice_processing", 1, "active"),
+        ):
+            conn.execute(
+                """
+                WITH doc AS (
+                    INSERT INTO public.knowledge_documents
+                        (tenant_id,pack_key,title,doc_type,version,status,checksum)
+                    VALUES (%s,%s,%s,'policy',%s,%s,'fixture') RETURNING id,tenant_id,pack_key
+                )
+                INSERT INTO public.knowledge_chunks
+                    (document_id,tenant_id,pack_key,chunk_index,content,embedding,embedding_model)
+                SELECT id,tenant_id,pack_key,0,%s,public.offline_knowledge_embedding(%s),
+                       'offline-token-hash-v1' FROM doc
+                """,
+                (tenant, pack, f"Excluded fixture {uuid4()}", version, status, phrase, phrase),
+            )
+    token, acme_token = token_hex(32), token_hex(32)
+    config = replace(
+        settings,
+        retrieve_credentials=dumps(
+            [
+                {"tenant_id": str(NORTHWIND), "token": token},
+                {"tenant_id": str(ACME), "token": acme_token},
+            ]
+        ),
+    )
+    body = {key: message[key] for key in ("case_id", "message_id")}
+    with TestClient(create_app(config)) as api:
+        assert api.post("/retrieve", json=body, headers=bearer(acme_token)).status_code == 404
+        assert api.post("/retrieve", json=body, headers=bearer(token_hex(32))).status_code == 403
+        assert (
+            api.post("/retrieve", json={**body, "query": phrase}, headers=bearer(token)).status_code
+            == 422
+        )
+        result = api.post("/retrieve", json=body, headers=bearer(token))
+        assert result.status_code == 200, result.text
+        found = result.json()
+        assert found["trace_id"] == message["trace_id"]
+        assert found["hits"][0]["title"] == "Shipping Policy"
+        assert all(
+            hit["title"] in {"Shipping Policy", "Returns & Refunds Policy"} for hit in found["hits"]
+        )
+        assert api.post("/retrieve", json=body, headers=bearer(token)).json() == found
+        empty = client.post(
+            "/ingest",
+            json={**make_payload(SUPPORT), "body_text": "What can I do?"},
+            headers=bearer(credentials[SUPPORT]),
+        ).json()
+        query = {key: empty[key] for key in ("case_id", "message_id")}
+        assert api.post("/retrieve", json=query, headers=bearer(token)).json()["hits"] == []
+
+
 def test_ingest_scope_and_disabled_pack(client: TestClient, credentials: dict[str, str]) -> None:
     headers = bearer(credentials[INVOICES])
     payload = make_payload(INVOICES)

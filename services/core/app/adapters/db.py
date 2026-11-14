@@ -23,6 +23,7 @@ class Settings:
     audit_token: str | None = field(default=None, repr=False)
     understand_credentials: str | None = field(default=None, repr=False)
     decide_credentials: str | None = field(default=None, repr=False)
+    retrieve_credentials: str | None = field(default=None, repr=False)
     offline_gateway_url: str | None = None
     understand_primary: Provider = "openai"
 
@@ -43,6 +44,7 @@ class Settings:
             audit_token=environ.get("SWITCHBOARD_AUDIT_TOKEN"),
             understand_credentials=environ.get("SWITCHBOARD_UNDERSTAND_CREDENTIALS"),
             decide_credentials=environ.get("SWITCHBOARD_DECIDE_CREDENTIALS"),
+            retrieve_credentials=environ.get("SWITCHBOARD_RETRIEVE_CREDENTIALS"),
             offline_gateway_url=environ.get("SWITCHBOARD_OFFLINE_GATEWAY_URL"),
             understand_primary="openai" if primary == "openai" else "anthropic",
         )

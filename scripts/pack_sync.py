@@ -158,9 +158,10 @@ def write_knowledge(conn: psycopg.Connection[Any], pack: Pack, tenant: UUID) -> 
         ).fetchone()
         assert inserted
         conn.execute(
-            """INSERT INTO public.knowledge_chunks (tenant_id,document_id,pack_key,chunk_index,content)
-               VALUES (%s,%s,%s,0,%s)""",
-            (tenant, inserted[0], config["key"], content),
+            """INSERT INTO public.knowledge_chunks (
+                   tenant_id,document_id,pack_key,chunk_index,content,embedding,embedding_model
+               ) VALUES (%s,%s,%s,0,%s,public.offline_knowledge_embedding(%s),'offline-token-hash-v1')""",
+            (tenant, inserted[0], config["key"], content, content),
         )
 
 

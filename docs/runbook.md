@@ -1,5 +1,18 @@
 # Switchboard runbook
 
+## Offline knowledge search
+
+Apply migration 017 before publishing pack knowledge with the loader. Set
+`SWITCHBOARD_RETRIEVE_CREDENTIALS` to a JSON list of tenant IDs and dedicated 64-character
+hex bearer tokens. Call `POST /retrieve` with the inbound `case_id` and `message_id` and an
+optional `limit` from 1 to 5. The query comes from the stored redacted body. Results contain
+chunk IDs for citations, document titles, untrusted content, and a fixture similarity score.
+Empty queries or no positive matches return an empty list. A case without an enabled pinned
+pack is unavailable for retrieval.
+
+Verify ranking and scope in the disposable PostgreSQL suite. The token-hash encoder is
+offline and its ranking is **built, not measured**. See ADR 0014.
+
 ## Phase 2 offline AI checks
 
 Build the disposable database image and pull the pinned gateway images with
