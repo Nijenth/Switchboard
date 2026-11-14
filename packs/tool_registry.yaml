@@ -55,7 +55,14 @@
           "identity_verified": {"type": "boolean"}
         },
         "required": ["order_found", "identity_verified"],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "not": {
+          "properties": {
+            "order_found": {"const": false},
+            "identity_verified": {"const": true}
+          },
+          "required": ["order_found", "identity_verified"]
+        }
       }
     },
     {
@@ -78,10 +85,20 @@
         "properties": {
           "order_status": {
             "enum": ["pending", "paid", "processing", "shipped", "delivered", "cancelled",
-                     "refunded", "partially_refunded", "payment_failed"]
+                     "refunded", "partially_refunded", "payment_failed", null]
           },
-          "carrier": {"type": ["string", "null"], "maxLength": 100},
-          "tracking_number": {"type": ["string", "null"], "maxLength": 100},
+          "carrier": {
+            "type": ["string", "null"],
+            "minLength": 2,
+            "maxLength": 20,
+            "pattern": "^[A-Za-z]{2,20}$"
+          },
+          "tracking_number": {
+            "type": ["string", "null"],
+            "minLength": 6,
+            "maxLength": 32,
+            "pattern": "^[A-Z0-9]{6,32}$"
+          },
           "estimated_delivery_at": {"type": ["string", "null"], "format": "date-time"}
         },
         "required": ["order_status", "carrier", "tracking_number", "estimated_delivery_at"],

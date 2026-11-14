@@ -337,7 +337,7 @@
         ],
         [
           {
-            "node": "Request lookups again",
+            "node": "Lookups finished",
             "type": "main",
             "index": 0
           }

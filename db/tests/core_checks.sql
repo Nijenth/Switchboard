@@ -69,6 +69,14 @@ SELECT pg_temp.expect_error('app cannot edit audit records',
   $q$UPDATE audit_log SET actor_id = 'x'$q$, 'permission denied');
 SELECT pg_temp.expect_error('app cannot delete operational data',
   $q$DELETE FROM cases WHERE id='92000000-0000-0000-0000-000000000001'$q$, 'permission denied');
+SELECT pg_temp.expect_error('app cannot insert cases with identity_verified set directly',
+  $q$INSERT INTO cases (id, tenant_id, tenant_pack_id, pack_id, channel, identity_verified)
+     VALUES (gen_random_uuid(), '10000000-0000-0000-0000-000000000001',
+             '40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000001',
+             'email', true)$q$, 'permission denied');
+SELECT pg_temp.expect_error('app cannot update cases.identity_verified directly',
+  $q$UPDATE cases SET identity_verified = true WHERE id='92000000-0000-0000-0000-000000000001'$q$,
+  'permission denied');
 
 SELECT pg_temp.expect_ok('app can append to the audit log',
   $q$INSERT INTO audit_log (tenant_id, actor_type, actor_id, event_type)

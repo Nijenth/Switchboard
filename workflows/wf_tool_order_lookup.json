@@ -154,7 +154,7 @@
           "queryReplacement": "={{ [$json.destination, $json.input.order_number] }}"
         }
       },
-      "alwaysOutputData": false
+      "alwaysOutputData": true
     },
     {
       "id": "SwitchboardOrder1-7",
@@ -170,7 +170,7 @@
         "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $('Receive action ID').item.json.action_id + '/complete' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: 'order:' + $('Check dispatch contract').item.json.input.order_number, output: {order_status: $json.order_status, carrier: $json.carrier, tracking_number: $json.tracking_number, estimated_delivery_at: $json.estimated_delivery_at} }) }}",
+        "jsonBody": "={{ JSON.stringify({grant: $('Keep successful claims').item.json.grant, external_ref: 'order:' + $('Check dispatch contract').item.json.input.order_number, output: {order_status: $json.order_status ?? null, carrier: $json.carrier ?? null, tracking_number: $json.tracking_number ?? null, estimated_delivery_at: $json.estimated_delivery_at ?? null} }) }}",
         "options": {
           "timeout": 5000,
           "redirect": {

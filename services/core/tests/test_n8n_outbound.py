@@ -445,7 +445,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 n8n("execute", "--id=SwitchboardEmail1")
                 posted.clear()
                 n8n("execute", "--id=SwitchboardSlack1")
-                assert len(posted) == 2
+                assert len(posted) == 1
                 for review_id in sorted(posted):
                     interaction(core, review_id)
                 n8n("execute", "--id=SwitchboardDispatch1")
@@ -461,10 +461,10 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                         """,
                         (NORTHWIND,),
                     ).fetchall() == [("executed", "sent")]
-                    # The order email ran its lookups: identity first, then the order itself.
+                    # The order email ran its lookups and produced an automatic, tool-cited reply.
                     lookups = conn.execute(
                         """
-                        SELECT a.tool_key,a.status,c.identity_verified FROM public.messages m
+                        SELECT a.id,a.tool_key,a.status,c.identity_verified FROM public.messages m
                         JOIN public.cases c ON (c.tenant_id,c.id)=(m.tenant_id,m.case_id)
                         JOIN public.actions a ON (a.tenant_id,a.message_id)=(m.tenant_id,m.id)
                         WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-order-1'
@@ -472,21 +472,49 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                         """,
                         (NORTHWIND,),
                     ).fetchall()
-                    assert lookups == [
+                    assert [
+                        (tool_key, status, verified) for _, tool_key, status, verified in lookups
+                    ] == [
                         ("order_identity_check", "executed", True),
                         ("order_lookup", "executed", True),
                     ]
-                    checks = conn.execute(
+                    lookup_id = lookups[1][0]
+                    order_reply = conn.execute(
                         """
-                        SELECT p.inputs->'checks' FROM public.messages m
-                        JOIN public.policy_decisions p ON (p.tenant_id,p.message_id)=(m.tenant_id,m.id)
+                        SELECT p.decision,p.rule_id,p.inputs->'checks',a.status,d.status,d.body,d.citations,
+                               (SELECT count(*) FROM public.approval_requests r
+                                WHERE (r.tenant_id,r.case_id)=(m.tenant_id,m.case_id))
+                        FROM public.messages m
+                        JOIN public.drafts d ON (d.tenant_id,d.in_reply_to_message_id)=(m.tenant_id,m.id)
+                        JOIN public.policy_decisions p ON (p.tenant_id,p.id)=(d.tenant_id,d.policy_decision_id)
+                        JOIN public.actions a ON (a.tenant_id,a.execution_draft_id)=(d.tenant_id,d.id)
                         WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-order-1'
-                        ORDER BY p.revision DESC LIMIT 1
                         """,
                         (NORTHWIND,),
                     ).fetchone()
-                    assert checks is not None
-                    assert (checks[0]["order_status"], checks[0]["carrier"]) == ("shipped", "UPS")
+                    assert order_reply is not None
+                    (
+                        decision,
+                        rule_id,
+                        checks,
+                        act_status,
+                        draft_status,
+                        body,
+                        citations,
+                        reviews,
+                    ) = order_reply
+                    assert (decision, rule_id, act_status, draft_status, reviews) == (
+                        "auto",
+                        "ORDER_STATUS",
+                        "executed",
+                        "sent",
+                        0,
+                    )
+                    assert (checks["order_status"], checks["carrier"]) == ("shipped", "UPS")
+                    assert body == (
+                        "Your order NW-1001 is shipped with UPS, tracking number 1Z999AA10000000001."
+                    )
+                    assert citations == [{"type": "tool", "action_id": str(lookup_id)}]
             checkpoints = [
                 json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()
             ]

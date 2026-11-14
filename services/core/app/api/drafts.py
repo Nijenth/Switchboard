@@ -5,10 +5,12 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException
+from jsonschema import Draft202012Validator
 from psycopg import Connection, Error
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout, TooManyRequests
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from referencing import Registry
 
 from app.adapters.ai import OfflineGateway
 from app.adapters.ingest import audit
@@ -30,7 +32,7 @@ class DraftInput(BaseModel):
 def lookup_evidence(
     conn: Connection, tenant: UUID, request: DraftInput, pack: Any
 ) -> dict[str, str]:
-    """Render completed lookups for this message as citable evidence (ADR 0020)."""
+    """Render completed lookups for this message as citable evidence (ADR 0020, ADR 0021)."""
     lookups = pack.get("lookups", []) if isinstance(pack, dict) else []
     templates = {
         entry["tool"]: entry["evidence"]
@@ -40,20 +42,35 @@ def lookup_evidence(
     if not templates:
         return {}
     evidence: dict[str, str] = {}
-    for action_id, key, given, output in conn.execute(
+    for action_id, key, given, output, input_schema, output_schema in conn.execute(
         """
-        SELECT id,tool_key,input,output FROM public.actions
-        WHERE tenant_id=%s AND case_id=%s AND message_id=%s AND risk_level='read'
-          AND status='executed' AND jsonb_typeof(output)='object'
-        ORDER BY executed_at,id
+        SELECT a.id,a.tool_key,a.input,a.output,t.input_schema,t.output_schema
+        FROM public.actions a JOIN public.tools t ON t.key=a.tool_key AND t.active
+        WHERE a.tenant_id=%s AND a.case_id=%s AND a.message_id=%s AND a.risk_level='read'
+          AND a.status='executed' AND jsonb_typeof(a.output)='object'
+          AND (a.tool_key <> 'order_lookup' OR public.order_identity_is_verified(a))
+        ORDER BY a.executed_at,a.id
         """,
         (tenant, request.case_id, request.message_id),
     ):
-        if key in templates and isinstance(given, dict):
-            text = render_evidence(templates[key], {**given, **output})
+        if (
+            key in templates
+            and isinstance(given, dict)
+            and isinstance(input_schema, dict)
+            and isinstance(output_schema, dict)
+            and Draft202012Validator(input_schema, registry=Registry()).is_valid(given)
+            and Draft202012Validator(output_schema, registry=Registry()).is_valid(output)
+        ):
+            text = render_evidence(
+                templates[key],
+                {**given, **output},
+                schemas={
+                    **input_schema.get("properties", {}),
+                    **output_schema.get("properties", {}),
+                },
+            )
             if text:
-                # Tool values reach the model too, so redact them like knowledge.
-                evidence[f"{TOOL_PREFIX}{action_id}"] = redact_text(text)
+                evidence[f"{TOOL_PREFIX}{action_id}"] = text
     return evidence
 
 

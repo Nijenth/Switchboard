@@ -86,7 +86,12 @@ def completion(body: dict[str, Any], anthropic: bool) -> tuple[int, dict[str, An
             }
         )
     else:
-        intent = fixtures().get(customer, "other")
+        default_intent = (
+            "order_status"
+            if re.search(r"\bwhere\b.*\bNW-\d+\b", customer, re.IGNORECASE)
+            else "other"
+        )
+        intent = fixtures().get(customer, default_intent)
         risk_flags = ["harassment"] if "[fixture:risk-harassment]" in customer else []
         output = json.dumps({"intent_key": intent, "confidence": 0.99, "risk_flags": risk_flags})
 
