@@ -202,6 +202,7 @@ SELECT pg_temp.expect_error('approved draft text is frozen',
 \ir approval_freshness_checks.sql
 \ir single_reply_review_checks.sql
 \ir read_lookup_identity_checks.sql
+\ir order_refund_checks.sql
 
 \echo
 \echo '== 7. Audit log =='

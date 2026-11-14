@@ -32,6 +32,7 @@ from app.api.decide import decide_router
 from app.api.drafts import draft_router
 from app.api.execution import execution_router
 from app.api.lookups import lookup_router
+from app.api.refunds import refund_router
 from app.api.retrieve import retrieve_router
 from app.api.understand import understand_router
 from app.schemas.ingest import IngestInput, IngestResult
@@ -71,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(retrieve_router(pool, config.retrieve_credentials, bearer_token))
     app.include_router(lookup_router(pool, config.lookup_credentials, bearer_token))
+    app.include_router(refund_router(pool, config.refund_credentials, bearer_token))
     app.include_router(
         understand_router(
             pool,

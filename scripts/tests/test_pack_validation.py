@@ -13,7 +13,7 @@ PACKS = Path(__file__).resolve().parents[2] / "packs"
 
 def test_all_released_packs_validate() -> None:
     tools, packs = read_catalog(PACKS)
-    assert len(tools) == 18
+    assert len(tools) == 20
     assert {pack.config["key"] for pack in packs} == {
         "ecommerce_support",
         "sales_leads",
@@ -21,6 +21,13 @@ def test_all_released_packs_validate() -> None:
     }
     cases = packs[0].cases
     assert len(cases) == 61
+    refund_pack = next(
+        pack
+        for pack in packs
+        if (pack.config["key"], pack.config["version"]) == ("ecommerce_support", 2)
+    )
+    assert len(refund_pack.cases) == 66
+    assert sum(case["case_key"].startswith("ecom-refund-v2-") for case in refund_pack.cases) == 5
     for tag, minimum in {"non_english": 5, "injection": 8, "typo": 1, "multi_intent": 1}.items():
         assert sum(tag in case.get("tags", []) for case in cases) >= minimum
 

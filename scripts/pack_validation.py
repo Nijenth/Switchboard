@@ -226,7 +226,10 @@ def pack_files(root: Path) -> list[tuple[str, str]]:
             raise PackError(f"{root}: pack files cannot be symlinks")
         if path.is_file() and path != root / "README.md":
             files.append(
-                (path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+                (
+                    path.relative_to(root).as_posix(),
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                )
             )
     return files
 
@@ -234,8 +237,9 @@ def pack_files(root: Path) -> list[tuple[str, str]]:
 def read_pack(root: Path, registry: dict[str, dict[str, Any]]) -> Pack:
     files = pack_files(root)
     config = read_yaml(root / "pack.yaml", "pack")
-    if config["key"] != root.name:
-        raise PackError(f"{root}: pack key must match its directory")
+    key, version = config["key"], config["version"]
+    if root.name != (key if version == 1 else f"{key}.v{version}"):
+        raise PackError(f"{root}: pack key and version must match its directory")
     intents = set(unique(config["intents"], "key", str(root / "pack.yaml")))
     if "system_escalation" in intents:
         raise PackError(f"{root}: system_escalation is a reserved intent")
@@ -264,6 +268,18 @@ def read_pack(root: Path, registry: dict[str, dict[str, Any]]) -> Pack:
             raise PackError(f"{root}/pack.yaml: unknown required extraction field")
         fields.update(f"extraction.{name}" for name in properties)
     check_lookups(root, config, selected, registry, fields)
+    if refund := config.get("refund"):
+        tool = registry.get(refund["tool"], {})
+        if (
+            refund["tool"] not in selected
+            or refund["intent"] not in intents
+            or tool.get("risk_level") != "money"
+            or not tool.get("requires_verified_identity")
+            or not {"order_number", "amount", "currency"}
+            <= set(tool.get("input_schema", {}).get("required", ()))
+            or not tool.get("output_schema")
+        ):
+            raise PackError(f"{root}/pack.yaml: invalid refund proposal configuration")
     for name in config.get("output_schemas", {}).values():
         read_contract(reference(root, name, "schemas", ".json"))
     for step, name in config.get("prompts", {}).items():

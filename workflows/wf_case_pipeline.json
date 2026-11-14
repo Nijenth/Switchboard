@@ -248,6 +248,39 @@
           "waitForSubWorkflow": true
         }
       }
+    },
+    {
+      "id": "b1a4ba99-473c-4504-9b6b-265e96bd4df8",
+      "name": "Request policy-gated actions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/refunds/propose' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(({case_id:$('Ingest email').first().json.case_id,message_id:$('Ingest email').first().json.message_id})) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardRefundAuth",
+          "name": "Switchboard Refund"
+        }
+      }
     }
   ],
   "connections": {
@@ -346,6 +379,17 @@
             "node": "Retrieve knowledge",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide and queue reply": {
+      "main": [
+        [
+          {
+            "node": "Request policy-gated actions",
+            "index": 0,
+            "type": "main"
           }
         ]
       ]

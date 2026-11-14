@@ -64,9 +64,9 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT $2::uuid AS action_id,\n       (SELECT external_ref::text FROM demo.outbound_receipts WHERE tenant_id=$1::uuid AND action_id=$2::uuid) AS external_ref",
+        "query": "WITH receipt AS (\n  SELECT external_ref::text, NULL::jsonb AS output FROM demo.outbound_receipts\n   WHERE $4::text = 'send_reply' AND tenant_id=$1::uuid AND action_id=$2::uuid\n  UNION ALL\n  SELECT refund_reference::text, jsonb_build_object('refund_reference',refund_reference,'status','refunded')\n    FROM demo.order_refunds\n   WHERE $4::text = 'order_refund_issue' AND tenant_id=$1::uuid AND idempotency_key=$3::text\n)\nSELECT $2::uuid AS action_id, receipt.external_ref, receipt.output\n  FROM (SELECT 1) requested LEFT JOIN receipt ON true\n WHERE $4::text IN ('send_reply','order_refund_issue')",
         "options": {
-          "queryReplacement": "={{ [$json.tenant_id, $json.action_id] }}"
+          "queryReplacement": "={{ [$json.tenant_id, $json.action_id, $json.idempotency_key, $json.tool_key] }}"
         }
       }
     },
@@ -81,10 +81,10 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/' + $json.action_id + '/reconcile' }}",
+        "url": "={{ $('Load service URLs').first().json.core_base_url + '/actions/' + $json.action_id + '/reconcile' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.external_ref ? {outcome: 'found', lookup_ref: 'mock-outbound:' + $json.action_id, external_ref: $json.external_ref} : {outcome: 'absent', lookup_ref: 'mock-outbound:' + $json.action_id}) }}",
+        "jsonBody": "={{ JSON.stringify($json.external_ref ? {outcome: 'found', lookup_ref: 'mock-receipt:' + $json.action_id, external_ref: $json.external_ref, ...($json.output ? {output: $json.output} : {})} : {outcome: 'absent', lookup_ref: 'mock-receipt:' + $json.action_id}) }}",
         "options": {
           "timeout": 5000,
           "response": {

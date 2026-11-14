@@ -45,7 +45,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "return [{json:{id:'switchboard-synthetic-shipping-1',threadId:'switchboard-synthetic-thread-1',from:{value:[{address:'fixture@example.test'}]},to:{value:[{address:'support@northwind.example'}]},text:'Do you ship internationally? I am in Canada.',subject:'International shipping',date:'2026-11-14T00:00:00Z'}},{json:{id:'switchboard-synthetic-order-1',threadId:'switchboard-synthetic-thread-2',from:{value:[{address:'emma.jones@example.com'}]},to:{value:[{address:'support@northwind.example'}]},text:'Hi, could you tell me where my order NW-1001 is?',subject:'Order status',date:'2026-11-14T00:05:00Z'}}];"
+        "jsCode": "return [{json:{id:'switchboard-synthetic-shipping-1',threadId:'switchboard-synthetic-thread-1',from:{value:[{address:'fixture@example.test'}]},to:{value:[{address:'support@northwind.example'}]},text:'Do you ship internationally? I am in Canada.',subject:'International shipping',date:'2026-11-14T00:00:00Z'}},{json:{id:'switchboard-synthetic-order-1',threadId:'switchboard-synthetic-thread-2',from:{value:[{address:'emma.jones@example.com'}]},to:{value:[{address:'support@northwind.example'}]},text:'Hi, could you tell me where my order NW-1001 is?',subject:'Order status',date:'2026-11-14T00:05:00Z'}},{json:{id:'switchboard-synthetic-refund-1',threadId:'switchboard-synthetic-thread-3',from:{value:[{address:'sofia.rossi@example.com'}]},to:{value:[{address:'support@northwind.example'}]},text:'Please refund my delivered order NW-1003.',subject:'Refund request',date:'2026-11-14T00:10:00Z'}}];"
       }
     },
     {

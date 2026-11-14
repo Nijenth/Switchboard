@@ -1,0 +1,14 @@
+tools:
+  - key: kb_search
+  - key: order_identity_check
+  - key: order_lookup
+  - key: order_refund_eligibility
+  - key: order_refund_issue
+    approval:
+      role: manager
+      above_amount: 0
+  - key: send_reply
+    approval:
+      role: agent
+  - key: create_ticket
+  - key: notify_slack

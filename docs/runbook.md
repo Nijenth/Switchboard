@@ -34,7 +34,7 @@ The Gmail-shaped manual trigger enters the same case pipeline as the Gmail trigg
 owns drafting, policy, and queueing. Slack approval and mock dispatch run as separate
 workflows so a reply can wait for a reviewer. The SLA watchdog calls the existing database
 expiry transition through core. Refund action approvals can be posted by the same Slack
-workflow. Only the send adapter is wired for mock dispatch.
+workflow. Mock dispatch covers replies and approved order refunds.
 Run `bash scripts/test_core.sh --offline-n8n` with the pinned images already cached to
 exercise the synthetic email through Slack and the mock receipt.
 
@@ -58,6 +58,27 @@ blocked from dispatch, including those with an outstanding grant. The refund sli
 publish replacement tool keys with the required contract.
 If a lookup completes while `/drafts` waits for the model, `/drafts` returns 409
 `Draft evidence changed`; call it again to draft from the new result.
+
+## Mock order refunds
+
+Apply migration 024 and run the demo seed and pack loader against a fresh demo database.
+The seed pins Northwind to ecommerce support v2. Bind a separate tenant-scoped
+`SWITCHBOARD_REFUND_CREDENTIALS` token to the Refund Header Auth placeholder. Import the
+eligibility and refund-issue workflows with the mock Postgres credential and refresh the
+case pipeline, lookup runner, dispatcher, and reconciler.
+
+A proposal returning `current_eligibility_required` needs a completed eligibility check
+for the same message and order. A proposal with an ineligible result or a policy block
+creates no money action. `order_refund_already_exists` means a different message already
+reserved the order. A replay of the original proposal returns its action and approval IDs.
+
+The manager reviews the amount and currency in Slack within the tenant SLA. A 409 at
+claim or consume can mean a newer eligibility result revoked authority. A lost completion
+after payout leaves the action executing until the lease expires. Run the reconciler
+to check the mock receipt and record the result. Keep ambiguous refunds in reconciliation
+and use the existing 30-second grace period before declaring a missing receipt.
+An expired refund approval cannot be approved. Review the pending action before
+cancelling it and starting a new refund request.
 
 ## Offline drafting
 

@@ -109,7 +109,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         pytest.skip("run scripts/test_core.ps1 -WithN8n")
     base = Settings.from_environment()
     tokens = {role: token_hex(32) for role in ("worker", "reconciler", "approval_poster")}
-    ingress, understand, retrieve, draft, decide, lookup = (token_hex(32) for _ in range(6))
+    ingress, understand, retrieve, draft, decide, lookup, refund = (token_hex(32) for _ in range(7))
 
     def scope(token: str) -> str:
         return json.dumps([{"tenant_id": str(NORTHWIND), "token": token}])
@@ -128,6 +128,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         draft_credentials=scope(draft),
         decide_credentials=scope(decide),
         lookup_credentials=scope(lookup),
+        refund_credentials=scope(refund),
     )
     request_id, action_id, policy_id, draft_id = (uuid4() for _ in range(4))
     payment_review = uuid4()
@@ -224,13 +225,14 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
     slack_bot_token = token_hex(32)
     completion_lost = False
     kill_worker: Callable[[], None] | None = None
+    lost_action: object = action_id
 
     @app.middleware("http")
     async def lose_first_completion(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         nonlocal completion_lost
-        if request.url.path == f"/actions/{action_id}/complete" and not completion_lost:
+        if request.url.path == f"/actions/{lost_action}/complete" and not completion_lost:
             completion_lost = True
             if kill_worker is not None:
                 await to_thread(kill_worker)
@@ -271,7 +273,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         )
         assert result.returncode == 0, (result.stdout + result.stderr)[-4000:]
 
-    def interaction(core: str, review_id: object) -> None:
+    def interaction(core: str, review_id: object, decision: str = "approve") -> None:
         payload = {
             "type": "block_actions",
             "api_app_id": config.slack_app_id,
@@ -279,7 +281,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             "user": {"id": REVIEWER},
             "container": {"type": "message", "channel_id": CHANNEL, "message_ts": MESSAGE_TS},
             "actions": [
-                {"type": "button", "action_id": "switchboard_approve", "value": str(review_id)}
+                {"type": "button", "action_id": f"switchboard_{decision}", "value": str(review_id)}
             ],
         }
         body = urlencode({"payload": json.dumps(payload)}).encode()
@@ -350,6 +352,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                             "Draft": draft,
                             "Decide": decide,
                             "Lookup": lookup,
+                            "Refund": refund,
                         }.items()
                     ],
                 ]
@@ -399,14 +402,50 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                     # The CLI can dump complete node data, including ephemeral grants.
                     output = result.stdout + result.stderr
                     codes = sorted(set(re.findall(r'"httpCode":\s*"([1-5][0-9]{2})"', output)))
+                    nodes = sorted(
+                        set(re.findall(r'"node":\s*\{\s*"name":\s*"([A-Za-z .-]{1,80})"', output))
+                    )
+                    errors = sorted(
+                        set(re.findall(r"\b([A-Za-z]{2,40}(?:Error|Exception))\b", output))
+                    )
+                    workflow_nodes = {
+                        node["name"]
+                        for path in workflows.glob("*.json")
+                        for node in json.loads(path.read_text(encoding="utf-8"))["nodes"]
+                    }
+                    hints = [
+                        hint
+                        for hint in (
+                            "paired item",
+                            "multiple matching items",
+                            "not been executed",
+                            "invalid syntax",
+                            "is not iterable",
+                            "cannot read properties",
+                            "can't determine which item",
+                            "only 1 item",
+                            "No data found",
+                            "doesn't exist",
+                            "referenced node",
+                            "no connection back",
+                            "trying to access item",
+                            "is not a function",
+                            "ambiguous",
+                        )
+                        if hint.casefold() in output.casefold()
+                    ]
+                    references = sorted(name for name in workflow_nodes if name in output)
                     pytest.fail(
-                        f"n8n {' '.join(command)} exited {result.returncode}; HTTP statuses: {codes}"
+                        f"n8n {' '.join(command)} exited {result.returncode}; "
+                        f"HTTP statuses: {codes}, nodes: {nodes}, errors: {errors}, "
+                        f"hints: {hints}, references: {references}"
                     )
 
             n8n("import:credentials", "--input=/fixture/credentials.json")
             n8n("import:workflow", "--separate", "--input=/fixture/workflows")
             n8n("publish:workflow", "--id=SwitchboardError1")
             n8n("publish:workflow", "--id=SwitchboardSend1")
+            n8n("publish:workflow", "--id=SwitchboardRefundIssue1")
             n8n("publish:workflow", "--id=SwitchboardConfig1")
             n8n("execute", "--id=SwitchboardSlack1")
             assert posted == {str(request_id), str(action_review_id), str(payment_review)}
@@ -438,6 +477,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 for workflow_id in (
                     "SwitchboardIdentity1",
                     "SwitchboardOrder1",
+                    "SwitchboardRefundEligibility1",
                     "SwitchboardLookups1",
                     "SwitchboardCase1",
                 ):
@@ -445,9 +485,47 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 n8n("execute", "--id=SwitchboardEmail1")
                 posted.clear()
                 n8n("execute", "--id=SwitchboardSlack1")
-                assert len(posted) == 1
+                with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
+                    set_northwind(conn)
+                    refund_review = conn.execute(
+                        """
+                        SELECT r.id::text,a.amount,a.currency,r.required_role,a.id
+                        FROM public.actions a JOIN public.approval_requests r
+                          ON (r.tenant_id,r.case_id,r.subject_id)=(a.tenant_id,a.case_id,a.id)
+                        WHERE a.tenant_id=%s AND a.tool_key='order_refund_issue'
+                        """,
+                        (NORTHWIND,),
+                    ).fetchone()
+                    assert refund_review is not None
+                    assert refund_review[1:4] == (210, "EUR", "manager")
+                assert refund_review[0] in posted
                 for review_id in sorted(posted):
-                    interaction(core, review_id)
+                    interaction(
+                        core, review_id, "approve" if review_id == refund_review[0] else "reject"
+                    )
+                lost_action = refund_review[4]
+                completion_lost = False
+                worker_name = "switchboard-refund-crash-" + uuid4().hex
+                n8n("execute", "--id=SwitchboardDispatch1", expect_failure=True, name=worker_name)
+                assert completion_lost
+                with psycopg.connect(
+                    host=config.db_host,
+                    port=config.db_port,
+                    dbname=config.db_name,
+                    user="switchboard_owner",
+                    password=os.environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+                    connect_timeout=3,
+                ) as owner:
+                    verify_cluster(owner, "switchboard_owner")
+                    owner.execute(
+                        "ALTER TABLE public.actions DISABLE TRIGGER actions_enforce_rules"
+                    )
+                    owner.execute(
+                        "UPDATE public.actions SET lease_expires_at=clock_timestamp() WHERE tenant_id=%s AND id=%s",
+                        (NORTHWIND, lost_action),
+                    )
+                    owner.execute("ALTER TABLE public.actions ENABLE TRIGGER actions_enforce_rules")
+                n8n("execute", "--id=SwitchboardReconcile1")
                 n8n("execute", "--id=SwitchboardDispatch1")
                 n8n("execute", "--id=SwitchboardSla1")
                 with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
@@ -456,11 +534,24 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                         """
                         SELECT a.status,d.status FROM public.messages m
                         JOIN public.drafts d ON (d.tenant_id,d.in_reply_to_message_id)=(m.tenant_id,m.id)
-                        JOIN public.actions a ON (a.tenant_id,a.execution_draft_id)=(d.tenant_id,d.id)
+                            JOIN public.actions a ON a.tenant_id=d.tenant_id AND a.input->>'draft_id'=d.id::text
                         WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-shipping-1'
                         """,
                         (NORTHWIND,),
-                    ).fetchall() == [("executed", "sent")]
+                    ).fetchall() == [("proposed", "rejected")]
+                    refund_result = conn.execute(
+                        """
+                        SELECT status,output->>'status',external_ref=output->>'refund_reference'
+                        FROM public.actions WHERE tenant_id=%s AND tool_key='order_refund_issue'
+                        """,
+                        (NORTHWIND,),
+                    ).fetchall()
+                    assert refund_result == [("executed", "refunded", True)]
+                    assert conn.execute(
+                        """SELECT count(*) FROM public.audit_log
+                           WHERE tenant_id=%s AND entity_id=%s AND event_type='action.reconciled'""",
+                        (NORTHWIND, lost_action),
+                    ).fetchone() == (1,)
                     # The order email ran its lookups and produced an automatic, tool-cited reply.
                     lookups = conn.execute(
                         """
@@ -468,17 +559,19 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                         JOIN public.cases c ON (c.tenant_id,c.id)=(m.tenant_id,m.case_id)
                         JOIN public.actions a ON (a.tenant_id,a.message_id)=(m.tenant_id,m.id)
                         WHERE m.tenant_id=%s AND m.external_message_id='switchboard-synthetic-order-1'
-                          AND a.risk_level='read' ORDER BY a.created_at
+                          AND a.risk_level='read' ORDER BY a.executed_at,a.id
                         """,
                         (NORTHWIND,),
                     ).fetchall()
-                    assert [
+                    assert lookups[0][1] == "order_identity_check"
+                    assert {
                         (tool_key, status, verified) for _, tool_key, status, verified in lookups
-                    ] == [
+                    } == {
                         ("order_identity_check", "executed", True),
                         ("order_lookup", "executed", True),
-                    ]
-                    lookup_id = lookups[1][0]
+                        ("order_refund_eligibility", "executed", True),
+                    }
+                    lookup_id = next(action for action, key, *_ in lookups if key == "order_lookup")
                     order_reply = conn.execute(
                         """
                         SELECT p.decision,p.rule_id,p.inputs->'checks',a.status,d.status,d.body,d.citations,
@@ -546,3 +639,10 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             "SELECT external_ref::text FROM demo.outbound_receipts WHERE tenant_id=%s AND action_id=%s",
             (NORTHWIND, action_id),
         ).fetchall() == [(external_ref,)]
+        if config.offline_gateway_url:
+            assert mock.execute(
+                """SELECT r.amount,r.currency,o.status
+                   FROM demo.order_refunds r JOIN demo.shop_orders o USING (tenant_id,order_number)
+                   WHERE r.tenant_id=%s AND r.order_number='NW-1003'""",
+                (NORTHWIND,),
+            ).fetchall() == [(210, "EUR", "refunded")]

@@ -182,7 +182,8 @@ SELECT 'fixture_unscoped_read', 'Fixture', 'Schema has no order field', 'read', 
 
 INSERT INTO pack_tools (pack_id, tool_key)
 SELECT c.pack_id, t.key FROM cases c CROSS JOIN tools t
- WHERE c.id='9c000000-0000-0000-0000-000000000001' AND t.key LIKE 'fixture_%';
+ WHERE c.id='9c000000-0000-0000-0000-000000000001'
+   AND (t.key LIKE 'fixture_%' OR t.key IN ('refund_eligibility_check','refund_issue'));
 
 SELECT pg_temp.expect_error('an alternate identity check rejects a mismatched sender',
   $q$INSERT INTO actions (tenant_id,case_id,message_id,trace_id,idempotency_key,tool_key,risk_level,input,status)
@@ -271,6 +272,8 @@ SELECT pg_temp.expect_error('an unscoped identity-gated proposal cannot advance 
 
 -- Model the pre-023 refund approval state in the disposable transaction.
 ALTER TABLE public.actions DISABLE TRIGGER actions_validate_order;
+ALTER TABLE public.actions DISABLE TRIGGER actions_validate_refund_evidence;
+ALTER TABLE public.approval_requests DISABLE TRIGGER approval_requests_validate_order_money;
 INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,required_role,reason)
 SELECT tenant_id,case_id,'action',id,'manager','Synthetic approval'
   FROM actions WHERE idempotency_key LIKE 'unscoped:refund_issue:%';
@@ -280,7 +283,9 @@ SELECT public.record_approval_decision(id,'20000000-0000-0000-0000-000000000002'
   \g /dev/null
 UPDATE actions SET status='approved',approved_by='20000000-0000-0000-0000-000000000002'
  WHERE idempotency_key LIKE 'unscoped:refund_issue:%';
+ALTER TABLE public.approval_requests ENABLE TRIGGER approval_requests_validate_order_money;
 ALTER TABLE public.actions ENABLE TRIGGER actions_validate_order;
+ALTER TABLE public.actions ENABLE TRIGGER actions_validate_refund_evidence;
 
 SELECT pg_temp.expect_error(tool_key || ' claim refused with ' || input::text,
   format('SELECT public.claim_mock_action(%L,%L,sha256(%L::bytea))',id,'w1',idempotency_key),
@@ -290,6 +295,7 @@ FROM actions WHERE idempotency_key LIKE 'unscoped:%';
 -- Only grants that 022 would have issued: an order that passed 022's refund
 -- scope check and a read with no order input that 022 gated by the case flag alone.
 ALTER TABLE public.actions DISABLE TRIGGER actions_validate_order;
+ALTER TABLE public.actions DISABLE TRIGGER actions_validate_refund_evidence;
 SELECT pg_temp.expect_value(tool_key || ' legacy grant exists',
   format('SELECT (public.claim_mock_action(%L,%L,sha256(%L::bytea)) IS NOT NULL)::text',id,'w1',idempotency_key),
   'true')
@@ -297,6 +303,7 @@ FROM actions WHERE idempotency_key LIKE 'unscoped:%'
   AND ((tool_key LIKE 'refund_%' AND input->>'order_number'='NW-1001')
        OR (tool_key='fixture_unscoped_read' AND input='{}'));
 ALTER TABLE public.actions ENABLE TRIGGER actions_validate_order;
+ALTER TABLE public.actions ENABLE TRIGGER actions_validate_refund_evidence;
 
 SELECT pg_temp.expect_value(tool_key || ' cannot consume a legacy unscoped grant',
   format('SELECT (public.consume_mock_grant(%L,%L,sha256(%L::bytea)) IS NULL)::text',

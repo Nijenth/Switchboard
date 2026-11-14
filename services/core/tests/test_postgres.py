@@ -99,6 +99,161 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.mark.parametrize("eligible", [False, True])
+def test_refund_proposal_uses_only_eligibility_evidence(
+    settings: Settings, credentials: dict[str, str], eligible: bool
+) -> None:
+    lookup, worker, refund = (token_hex(32) for _ in range(3))
+    config = replace(
+        settings,
+        lookup_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": lookup}]),
+        refund_credentials=dumps([{"tenant_id": str(NORTHWIND), "token": refund}]),
+        execution_credentials=dumps(
+            [
+                {
+                    "tenant_id": str(NORTHWIND),
+                    "role": "worker",
+                    "principal": "refund-test",
+                    "token": worker,
+                }
+            ]
+        ),
+    )
+    order = "NW-1008" if eligible else "NW-1004"
+    sender = "sofia.rossi@example.com" if eligible else "arjun.mehta@example.com"
+    with TestClient(create_app(config)) as api:
+
+        def ingest() -> dict[str, str]:
+            response = api.post(
+                "/ingest",
+                json={
+                    **make_payload(SUPPORT),
+                    "sender": {"address": sender},
+                    "body_text": f"Refund {order}",
+                },
+                headers=bearer(credentials[SUPPORT]),
+            )
+            assert response.status_code == 200
+            body = {key: response.json()[key] for key in ("case_id", "message_id")}
+            with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+                verify_cluster(conn, "switchboard_core")
+                set_northwind(conn)
+                conn.execute(
+                    """INSERT INTO public.classifications
+                         (tenant_id,case_id,message_id,pack_id,intent_key,method,priority,confidence)
+                       SELECT tenant_id,id,%s,pack_id,'returns_refunds','rules','normal',0.99
+                       FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                    (body["message_id"], NORTHWIND, body["case_id"]),
+                )
+                conn.execute(
+                    """INSERT INTO public.extractions
+                         (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,field_confidence,status)
+                       SELECT tenant_id,id,%s,pack_id,'order_reference',1,%s,%s,'validated'
+                       FROM public.cases WHERE tenant_id=%s AND id=%s""",
+                    (
+                        body["message_id"],
+                        dumps({"order_number": order}),
+                        '{"order_number":0.99}',
+                        NORTHWIND,
+                        body["case_id"],
+                    ),
+                )
+            return body
+
+        def complete_lookup(body: dict[str, str], tool: str, output: dict[str, object]) -> None:
+            proposals = api.post("/lookups", json=body, headers=bearer(lookup))
+            assert proposals.status_code == 200, proposals.text
+            action_id = next(
+                a["action_id"] for a in proposals.json()["pending"] if a["tool_key"] == tool
+            )
+            grant = api.post(f"/actions/{action_id}/claim", headers=bearer(worker)).json()["grant"]
+            assert (
+                api.post(
+                    f"/actions/{action_id}/consume", headers=bearer(worker), json={"grant": grant}
+                ).status_code
+                == 200
+            )
+            result = api.post(
+                f"/actions/{action_id}/complete",
+                headers=bearer(worker),
+                json={"grant": grant, "external_ref": str(uuid4()), "output": output},
+            )
+            assert result.status_code == 200, result.text
+
+        def prepare(body: dict[str, str]) -> None:
+            complete_lookup(
+                body, "order_identity_check", {"order_found": True, "identity_verified": True}
+            )
+            complete_lookup(
+                body,
+                "order_refund_eligibility",
+                {
+                    "eligible": eligible,
+                    "reason": "eligible" if eligible else "window_expired",
+                    "refundable_amount": "32.00" if eligible else None,
+                    "currency": "EUR" if eligible else None,
+                },
+            )
+
+        body = ingest()
+        assert api.post("/refunds/propose", json=body, headers=bearer(lookup)).status_code == 403
+        assert (
+            api.post(
+                "/refunds/propose", json={**body, "amount": "1.00"}, headers=bearer(refund)
+            ).status_code
+            == 422
+        )
+        assert api.post("/refunds/propose", json=body, headers=bearer(refund)).json() == {
+            "waiting": "current_eligibility_required"
+        }
+        prepare(body)
+        response = api.post("/refunds/propose", json=body, headers=bearer(refund))
+        assert response.status_code == 200, response.text
+        if not eligible:
+            assert response.json() == {"waiting": "window_expired"}
+            return
+        proposed = response.json()
+        assert proposed["status"] == "pending_approval"
+        assert api.post("/refunds/propose", json=body, headers=bearer(refund)).json() == proposed
+        second = ingest()
+        prepare(second)
+        assert api.post("/refunds/propose", json=second, headers=bearer(refund)).json() == {
+            "waiting": "order_refund_already_exists"
+        }
+        with (
+            psycopg.connect(
+                host=settings.db_host,
+                port=settings.db_port,
+                dbname=settings.db_name,
+                user="switchboard_owner",
+                password=environ["SWITCHBOARD_DB_OWNER_PASSWORD"],
+                connect_timeout=3,
+            ) as owner,
+            owner.transaction(),
+        ):
+            verify_cluster(owner, "switchboard_owner")
+            owner.execute("SELECT set_config('app.tenant_id',%s,true)", (str(NORTHWIND),))
+            assert owner.execute(
+                """SELECT a.amount,a.currency,r.required_role FROM public.actions a
+                   JOIN public.approval_requests r ON (r.tenant_id,r.subject_id)=(a.tenant_id,a.id)
+                   WHERE a.tenant_id=%s AND a.id=%s""",
+                (NORTHWIND, proposed["action_id"]),
+            ).fetchone() == (32, "EUR", "manager")
+            owner.execute(
+                """UPDATE public.approval_requests SET sla_due_at=clock_timestamp()-interval '1 second'
+                   WHERE tenant_id=%s AND id=%s""",
+                (NORTHWIND, proposed["approval_id"]),
+            )
+            with (
+                pytest.raises(psycopg.errors.RaiseException, match="past its SLA"),
+                owner.transaction(),
+            ):
+                owner.execute(
+                    "SELECT public.record_approval_decision(%s,%s,'approved','api')",
+                    (proposed["approval_id"], UUID("20000000-0000-0000-0000-000000000002")),
+                )
+
+
 def test_health_uses_actual_core_login(client: TestClient, settings: Settings) -> None:
     assert client.get("/health", headers=bearer(settings.health_token)).status_code == 200
 
@@ -125,8 +280,8 @@ def test_retrieve_ranks_and_scopes_pinned_pack_knowledge(
         verify_cluster(conn, "switchboard_config_loader")
         for tenant, pack, version, status in (
             (ACME, "ecommerce_support", 1, "active"),
-            (NORTHWIND, "ecommerce_support", 2, "active"),
-            (NORTHWIND, "ecommerce_support", 1, "archived"),
+            (NORTHWIND, "ecommerce_support", 1, "active"),
+            (NORTHWIND, "ecommerce_support", 2, "archived"),
             (NORTHWIND, "invoice_processing", 1, "active"),
         ):
             conn.execute(
@@ -430,7 +585,7 @@ def test_offline_falls_back_from_anthropic(settings: Settings) -> None:
         with pool.connection() as conn:
             verify_cluster(conn, "switchboard_core")
             row = conn.execute(
-                "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=1"
+                "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=2"
             ).fetchone()
         assert row is not None
         accounting = Accounting(
@@ -500,7 +655,7 @@ def test_decide_publishes_scoped_idempotent_policy(
         assert len(rows) == 1
         inputs, version = rows[0]
         assert inputs["classification"]["flags"] == ["prompt_injection"]
-        assert version == "engine:2+ecommerce_support:1"
+        assert version == "engine:2+ecommerce_support:2"
 
 
 def test_decide_persists_invalid_tenant_policy(
@@ -1547,31 +1702,12 @@ def test_lookups_verify_identity_before_reading_order_data(
         )
         assert completed.status_code == 200, completed.text
 
-        with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
-            verify_cluster(conn, "switchboard_core")
-            set_northwind(conn)
-            refund_actions = conn.execute(
-                """INSERT INTO public.actions
-                     (tenant_id,case_id,message_id,trace_id,idempotency_key,tool_key,risk_level,input,
-                      status)
-                   SELECT m.tenant_id,m.case_id,m.id,m.trace_id,
-                          'refund-eligibility:' || m.id || ':' || input::text,
-                          'refund_eligibility_check','read',input,'proposed'
-                   FROM public.messages m CROSS JOIN (VALUES
-                     ('{"order_number":"NW-1001"}'::jsonb), ('{"order_number":"NW-1002"}'), ('{}')
-                   ) v(input)
-                   WHERE m.tenant_id=%s AND m.id=%s
-                   RETURNING input,id""",
-                (NORTHWIND, body["message_id"]),
-            ).fetchall()
-        assert len(refund_actions) == 3
-        for _, action_id in refund_actions:
-            refund_claim = api.post(f"/actions/{action_id}/claim", headers=worker)
-            assert refund_claim.status_code == 409, refund_claim.text
-
         second = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert second["completed"] == ["order_identity_check"]
-        assert [item["tool_key"] for item in second["pending"]] == ["order_lookup"]
+        assert [item["tool_key"] for item in second["pending"]] == [
+            "order_lookup",
+            "order_refund_eligibility",
+        ]
         lookup_action = second["pending"][0]["action_id"]
 
         # An expired executing read action stays recoverable via a fresh claim.
@@ -1607,10 +1743,20 @@ def test_lookups_verify_identity_before_reading_order_data(
             },
         )
         assert dispatch["input"] == {"order_number": "NW-1001"}
+        run(
+            api,
+            second["pending"][1]["action_id"],
+            {
+                "eligible": False,
+                "reason": "not_delivered",
+                "refundable_amount": None,
+                "currency": None,
+            },
+        )
         third = api.post("/lookups", json=body, headers=bearer(lookup_token)).json()
         assert (third["pending"], sorted(third["completed"])) == (
             [],
-            ["order_identity_check", "order_lookup"],
+            ["order_identity_check", "order_lookup", "order_refund_eligibility"],
         )
         decided = api.post("/decide", json=body, headers=bearer(decide_token))
         assert decided.status_code == 200, decided.text
@@ -1775,7 +1921,7 @@ def test_lookups_verify_identity_before_reading_order_data(
             (NORTHWIND, same_thread["message_id"]),
         ).fetchone() == (0,)
         pack_def = conn.execute(
-            "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=1"
+            "SELECT definition FROM public.packs WHERE key='ecommerce_support' AND version=2"
         ).fetchone()
         assert pack_def is not None
         assert lookup_evidence(

@@ -35,8 +35,9 @@ INSERT INTO queues (tenant_id, key, name, notify_channel) VALUES
 -- Tenant packs + inbound endpoints
 -- ---------------------------------------------------------------------
 INSERT INTO tenant_packs (id, tenant_id, pack_key, pack_id, config) VALUES
-  ('40000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'ecommerce_support',  '30000000-0000-0000-0000-000000000001',
-   '{"adapters":{"order_lookup":"mock","refund_eligibility_check":"mock","refund_issue":"mock","send_reply":"mock"}}'),
+  ('40000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'ecommerce_support',
+   (SELECT id FROM public.packs WHERE key='ecommerce_support' AND version=2),
+   '{"adapters":{"order_lookup":"mock","order_refund_eligibility":"mock","order_refund_issue":"mock","send_reply":"mock"}}'),
   ('40000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', 'sales_leads',        '30000000-0000-0000-0000-000000000002',
    '{"adapters":{"company_enrich":"mock","crm_upsert_contact":"mock","crm_create_deal":"mock","calendar_find_slots":"mock","meeting_book":"mock"},
      "sales_rep_email":"sam@northwind.example"}'),
@@ -98,7 +99,9 @@ INSERT INTO demo.shop_orders (id, tenant_id, order_number, customer_email, custo
   ('60000000-0000-0000-0000-000000000006', '10000000-0000-0000-0000-000000000001', 'NW-1006', 'noah.wilson@example.com',  'Noah Wilson',  '60601',   'US',
    'processing',      42.00, 'USD', NULL,    NULL,                     now()-interval '1 day',   NULL,                     NULL,                     now()+interval '5 days', NULL, 'not_shipped_yet'),
   ('60000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000001', 'NW-1007', 'emma.jones@example.com',   'Emma Jones',   '94107',   'US',
-   'refunded',        75.00, 'USD', 'UPS',   '1Z999AA10000000007',     now()-interval '40 days', now()-interval '38 days', now()-interval '33 days', NULL,                    now()-interval '3 days', 'refund_issued');
+   'refunded',        75.00, 'USD', 'UPS',   '1Z999AA10000000007',     now()-interval '40 days', now()-interval '38 days', now()-interval '33 days', NULL,                    now()-interval '3 days', 'refund_issued'),
+  ('60000000-0000-0000-0000-000000000008', '10000000-0000-0000-0000-000000000001', 'NW-1008', 'sofia.rossi@example.com', 'Sofia Rossi', '20121', 'IT',
+   'delivered',      32.00, 'EUR', 'DHL', 'JD014600000000000008', now()-interval '9 days', now()-interval '8 days', now()-interval '4 days', NULL, NULL, 'refund_review_fixture');
 
 INSERT INTO demo.shop_order_items (order_id, sku, name, quantity, unit_price) VALUES
   ('60000000-0000-0000-0000-000000000001', 'JKT-DEN-M',   'Denim Jacket (M)',       1, 129.00),
