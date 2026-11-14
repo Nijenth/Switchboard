@@ -9,11 +9,14 @@ from statistics import mean
 from typing import Any
 from uuid import UUID, uuid4
 
+from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from app.adapters.ai import OfflineGateway, Provider
 from app.adapters.db import Settings, create_pool
-from app.ai_accounting import Accounting
+from app.ai_accounting import Accounting, set_scope
+from app.api.drafts import DraftInput, lookup_evidence
+from app.api.lookups import LookupInput, propose_lookups
 from app.engine.policy import decide
 from app.guardrails import redact_text
 from app.understanding import Understanding, understand
@@ -39,6 +42,77 @@ def percentile(values: list[int], fraction: float) -> int:
     return sorted(values)[ceil(fraction * len(values)) - 1]
 
 
+def restricted_tool_exposed(
+    conn: Connection[Any],
+    tenant: UUID,
+    pack_id: UUID,
+    pack: dict[str, Any],
+    channel: str,
+    sender: str | None,
+    result: Understanding,
+    restricted: set[str],
+) -> bool:
+    """Probe actual lookup proposals and draft sources in a rolled-back unverified case."""
+    case_id, message_id, trace_id = uuid4(), uuid4(), uuid4()
+    with conn.transaction(force_rollback=True):
+        set_scope(conn, tenant)
+        enrollment = conn.execute(
+            """SELECT tp.id,e.id FROM public.tenant_packs tp JOIN public.channel_endpoints e
+                 ON (e.tenant_id,e.tenant_pack_id)=(tp.tenant_id,tp.id)
+                WHERE tp.tenant_id=%s AND tp.pack_id=%s AND tp.enabled AND e.channel=%s
+                ORDER BY e.id LIMIT 1""",
+            (tenant, pack_id, channel),
+        ).fetchone()
+        if enrollment is None:
+            raise ValueError("The selected eval pack must be pinned to the disposable tenant")
+        conn.execute(
+            """INSERT INTO public.cases (id,tenant_id,tenant_pack_id,pack_id,channel,endpoint_id)
+               VALUES (%s,%s,%s,%s,%s,%s)""",
+            (case_id, tenant, enrollment[0], pack_id, channel, enrollment[1]),
+        )
+        conn.execute(
+            """INSERT INTO public.messages
+                   (id,tenant_id,case_id,trace_id,idempotency_key,direction,channel,endpoint_id,sender_address)
+               VALUES (%s,%s,%s,%s,%s,'inbound',%s,%s,%s)""",
+            (
+                message_id,
+                tenant,
+                case_id,
+                trace_id,
+                str(message_id),
+                channel,
+                enrollment[1],
+                sender or "eval@example.test",
+            ),
+        )
+        if result.reason == "policy_review":
+            conn.execute(
+                """INSERT INTO public.extractions
+                       (tenant_id,case_id,message_id,pack_id,schema_key,schema_version,data,
+                        field_confidence,status)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'validated')""",
+                (
+                    tenant,
+                    case_id,
+                    message_id,
+                    pack_id,
+                    "order_reference",
+                    1,
+                    Jsonb(result.extraction),
+                    Jsonb(result.field_confidence),
+                ),
+            )
+        proposals = propose_lookups(
+            conn, tenant, LookupInput(case_id=case_id, message_id=message_id)
+        )
+        evidence = lookup_evidence(
+            conn, tenant, DraftInput(case_id=case_id, message_id=message_id), pack
+        )
+        return bool(
+            evidence or restricted.intersection(row["tool_key"] for row in proposals["pending"])
+        )
+
+
 def run(
     tenant: UUID, pack_key: str, version: int, providers: tuple[Provider, ...] = PROVIDERS
 ) -> dict[str, Any]:
@@ -60,13 +134,13 @@ def run(
             if identity != (marker, "switchboard_core"):
                 raise ValueError("Disposable database identity mismatch")
             row = conn.execute(
-                "SELECT definition FROM public.packs WHERE key=%s AND version=%s",
+                "SELECT id,definition FROM public.packs WHERE key=%s AND version=%s",
                 (pack_key, version),
             ).fetchone()
             cases = conn.execute(
                 """
                 SELECT id,case_key,message,sender_address,expected_intent,expected_decision,
-                  expected_extraction,tags FROM public.eval_cases
+                  expected_extraction,tags,channel FROM public.eval_cases
                 WHERE pack_key=%s AND pack_version=%s AND active ORDER BY case_key
                 """,
                 (pack_key, version),
@@ -90,10 +164,12 @@ def run(
         if (
             row is None
             or not cases
-            or not row[0].get("assets", {}).get("prompts", {}).get("classify")
+            or not row[1].get("assets", {}).get("prompts", {}).get("classify")
         ):
             raise ValueError("The selected published pack needs prompts and eval cases")
-        pack = row[0]
+        pack_id, pack = row
+        restricted = {key for key, tool in tools.items() if tool["requires_verified_identity"]}
+        restricted_reads = {key for key in restricted if tools[key]["risk_level"] == "read"}
         for _, key, message, sender, *_ in cases:
             redacted = redact_text(message or "", sender_address=sender or "")
             for kind, span in SYNTHETIC_SPANS.get(key, {}).items():
@@ -124,19 +200,34 @@ def run(
             gates = 0
             blocked = 0
             missing_cost = 0
+            decisions_correct: list[bool] = []
+            leaks = 0
+            by_tag: dict[str, dict[str, int]] = {}
             provider_signatures: list[tuple[object, ...]] = []
-            for case_id, key, message, sender, expected, expected_decision, fields, tags in cases:
+            for (
+                case_id,
+                key,
+                message,
+                sender,
+                expected,
+                expected_decision,
+                fields,
+                tags,
+                channel,
+            ) in cases:
                 redacted = redact_text(message or "", sender_address=sender or "")
                 outcomes = []
                 decisions = []
                 attempts = []
+                leaked = False
                 for _ in range(2):
                     accounting = Accounting(pool, gateway, tenant, uuid4(), redacted, provider)
                     result = understand(pack, redacted, provider, accounting.attempt)
                     outcomes.append(result)
                     context = {
                         "case": {
-                            "identity_verified": "verified" in tags and "unverified" not in tags
+                            "identity_verified": "verified" in tags and "unverified" not in tags,
+                            "channel": channel,
                         },
                         "classification": {
                             "intent_key": result.intent,
@@ -153,9 +244,33 @@ def run(
                         if "money" in tags
                         else set()
                     )
+                    if (
+                        "unverified" in tags
+                        and result.extraction
+                        and result.reason == "policy_review"
+                    ):
+                        proposed.update(restricted_reads)
+                    # This decision fixture supplies passing outbound checks. It does not
+                    # generate a draft or use the expected decision to choose guard inputs.
                     decisions.append(
-                        decide(pack, context, tools, proposed, budget_blocked=accounting.blocked)
+                        decide(
+                            pack,
+                            context,
+                            tools,
+                            proposed,
+                            citations_ok=True,
+                            output_ok=True,
+                            budget_blocked=accounting.blocked,
+                        )
                     )
+                    if "unverified" in tags:
+                        with pool.connection() as conn:
+                            exposed = restricted_tool_exposed(
+                                conn, tenant, pack_id, pack, channel, sender, result, restricted
+                            )
+                        leaked |= exposed or bool(
+                            restricted.intersection(decisions[-1].allowed_tools)
+                        )
                     attempts.append(accounting)
                     latencies.append(accounting.latency_ms)
                     costs.append(float(accounting.cost))
@@ -174,7 +289,20 @@ def run(
                 provider_signatures.append(tuple(signature))
                 agreement.append(signature[0] == signature[1])
                 violation = any(gate_violation(item.decision, tags) for item in decisions)
-                gates += int(violation)
+                gates += int(violation or leaked)
+                leaks += int(leaked)
+                scores = [item.decision == expected_decision for item in decisions]
+                decisions_correct.extend(scores)
+                groups = set(tags) | {channel, expected, f"expected_{expected_decision}"}
+                for tag in groups:
+                    metrics = by_tag.setdefault(
+                        tag,
+                        {"cases": 0, "correct_attempts": 0, "gate_violations": 0, "tool_leaks": 0},
+                    )
+                    metrics["cases"] += 1
+                    metrics["correct_attempts"] += sum(scores)
+                    metrics["gate_violations"] += int(violation or leaked)
+                    metrics["tool_leaks"] += int(leaked)
                 with pool.connection() as conn:
                     conn.execute(
                         """
@@ -194,7 +322,11 @@ def run(
                             intent_correct(first, expected),
                             decisions[0].decision == expected_decision,
                             None if fields is None else int(first.extraction == fields),
-                            "auto_on_safety_case" if violation else None,
+                            "leak_unverified"
+                            if leaked
+                            else "auto_on_safety_case"
+                            if violation
+                            else None,
                             sum(item.cost for item in attempts),
                             sum(item.latency_ms for item in attempts),
                             Jsonb(
@@ -212,6 +344,7 @@ def run(
                 "cases": len(cases),
                 "repeats": 2,
                 "intent_accuracy": mean(correct) if correct else None,
+                "decision_accuracy": mean(decisions_correct),
                 "classified_attempts": len(correct),
                 "guardrail_escalated_cases": escalations,
                 "guardrail_expected_escalations": expected_escalations,
@@ -222,6 +355,14 @@ def run(
                 "p50_model_ms": percentile(latencies, 0.50),
                 "p95_model_ms": percentile(latencies, 0.95),
                 "gate_violations": gates,
+                "unverified_tool_leaks": leaks,
+                "by_tag": {
+                    tag: {
+                        **counts,
+                        "decision_accuracy": counts["correct_attempts"] / (2 * counts["cases"]),
+                    }
+                    for tag, counts in sorted(by_tag.items())
+                },
             }
             with pool.connection() as conn:
                 conn.execute(
@@ -240,7 +381,9 @@ def run(
     )
     return {
         "mode": "offline fixture",
-        "status": "built, not measured",
+        "pack_version": version,
+        "intent_measurement": "Fake model echoes expected intents. This is not a measure of AI quality.",
+        "decision_measurement": "Real policy and safety gates given fixture intents and guard inputs.",
         "providers": reports,
         "cross_provider_agreement": comparison,
         "redaction_misses": redaction_misses,

@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from shutil import copytree
 from typing import Any
@@ -30,6 +31,65 @@ def test_all_released_packs_validate() -> None:
     assert sum(case["case_key"].startswith("ecom-refund-v2-") for case in refund_pack.cases) == 5
     for tag, minimum in {"non_english": 5, "injection": 8, "typo": 1, "multi_intent": 1}.items():
         assert sum(tag in case.get("tags", []) for case in cases) >= minimum
+
+
+def test_ecommerce_v3_preserves_v2_and_covers_demo_orders() -> None:
+    v2 = PACKS / "ecommerce_support.v2"
+    v3 = PACKS / "ecommerce_support.v3"
+    eval_path = "evals/cases.jsonl"
+    original = (v2 / eval_path).read_bytes()
+    expanded = (v3 / eval_path).read_bytes()
+    assert expanded.startswith(original)
+    for source in v2.rglob("*"):
+        if source.is_dir():
+            continue
+        relative = source.relative_to(v2)
+        if relative.as_posix() in {"README.md", eval_path}:
+            continue
+        expected = source.read_bytes()
+        if relative.as_posix() == "pack.yaml":
+            expected = expected.replace(b"version: 2\n", b"version: 3\n", 1)
+        assert (v3 / relative).read_bytes() == expected
+
+    cases = [json.loads(line) for line in expanded.splitlines()]
+    new_cases = [json.loads(line) for line in expanded[len(original) :].splitlines()]
+    assert len(new_cases) >= 44
+    assert all(case.get("notes") for case in new_cases)
+    assert all(
+        case["sender_address"].rsplit("@", 1)[-1] in {"example.com", "example.test"}
+        for case in new_cases
+    )
+    language_tags = {"de", "es", "fr", "pt"}
+    assert len({tag for case in new_cases for tag in case["tags"] if tag in language_tags}) >= 3
+    seed = (PACKS.parent / "db/seeds/001_demo_seed.sql").read_text(encoding="utf-8")
+    direct_orders = set(re.findall(r"'(NW-\d+)'", seed))
+    generated_orders = {f"NW-{number}" for number in re.findall(r"\((\d{4}),'[a-z_]+'\)", seed)}
+    assert set(re.findall(r"NW-\d+", expanded.decode())) <= direct_orders | generated_orders
+    minimums = {
+        "typo": 8,
+        "multi_intent": 6,
+        "non_english": 10,
+        "web_chat": 10,
+        "spam_or_auto": 5,
+        "expected_auto": 15,
+        "order_status": 14,
+        "shipping_delay": 14,
+        "injection": 14,
+        "unverified": 12,
+        "must_escalate": 14,
+        "money": 16,
+    }
+    groups = [
+        set(case["tags"])
+        | {
+            case["channel"],
+            case["expected_intent"],
+            f"expected_{case['expected_decision']}",
+        }
+        for case in cases
+    ]
+    for tag, minimum in minimums.items():
+        assert sum(tag in group for group in groups) >= minimum, tag
 
 
 @pytest.mark.parametrize(

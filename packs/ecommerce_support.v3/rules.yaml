@@ -1,0 +1,60 @@
+version: 1
+rules:
+  - id: SPAM_OR_AUTO
+    when:
+      field: classification.intent_key
+      op: eq
+      value: spam_or_auto
+    then:
+      decision: ignore
+      reason: The message was classified as spam or an automated reply and requires no support response.
+  - id: SHIPPING_DELAY
+    when:
+      field: classification.intent_key
+      op: eq
+      value: shipping_delay
+    then:
+      decision: needs_approval
+      reason: Confirm the carrier status and available options before promising a delivery date or remedy.
+  - id: RETURNS_REFUNDS
+    when:
+      field: classification.intent_key
+      op: eq
+      value: returns_refunds
+    then:
+      decision: needs_approval
+      reason: Check the order and return eligibility before offering a refund or return instructions.
+  - id: PAYMENT_ISSUE
+    when:
+      field: classification.intent_key
+      op: eq
+      value: payment_issue
+    then:
+      decision: needs_approval
+      reason: Confirm the payment status and the appropriate next step before replying to the customer.
+  - id: ORDER_STATUS
+    when:
+      all:
+        - field: classification.intent_key
+          op: eq
+          value: order_status
+        - field: case.identity_verified
+          op: eq
+          value: true
+    then:
+      decision: auto
+      reason: The customer’s identity is verified, so an order-status reply is eligible for automatic handling.
+      allow_tools:
+        - kb_search
+        - send_reply
+  - id: PRODUCT_QUESTION
+    when:
+      field: classification.intent_key
+      op: eq
+      value: product_question
+    then:
+      decision: auto
+      reason: General product questions are eligible for a reply grounded in the support knowledge base.
+      allow_tools:
+        - kb_search
+        - send_reply

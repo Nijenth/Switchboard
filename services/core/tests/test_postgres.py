@@ -655,7 +655,7 @@ def test_decide_publishes_scoped_idempotent_policy(
         assert len(rows) == 1
         inputs, version = rows[0]
         assert inputs["classification"]["flags"] == ["prompt_injection"]
-        assert version == "engine:2+ecommerce_support:2"
+        assert version == "engine:2+ecommerce_support:3"
 
 
 def test_decide_persists_invalid_tenant_policy(

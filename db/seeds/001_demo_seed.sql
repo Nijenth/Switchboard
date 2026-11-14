@@ -36,7 +36,7 @@ INSERT INTO queues (tenant_id, key, name, notify_channel) VALUES
 -- ---------------------------------------------------------------------
 INSERT INTO tenant_packs (id, tenant_id, pack_key, pack_id, config) VALUES
   ('40000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'ecommerce_support',
-   (SELECT id FROM public.packs WHERE key='ecommerce_support' AND version=2),
+   (SELECT id FROM public.packs WHERE key='ecommerce_support' AND version=3),
    '{"adapters":{"order_lookup":"mock","order_refund_eligibility":"mock","order_refund_issue":"mock","send_reply":"mock"}}'),
   ('40000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', 'sales_leads',        '30000000-0000-0000-0000-000000000002',
    '{"adapters":{"company_enrich":"mock","crm_upsert_contact":"mock","crm_create_deal":"mock","calendar_find_slots":"mock","meeting_book":"mock"},
@@ -102,6 +102,24 @@ INSERT INTO demo.shop_orders (id, tenant_id, order_number, customer_email, custo
    'refunded',        75.00, 'USD', 'UPS',   '1Z999AA10000000007',     now()-interval '40 days', now()-interval '38 days', now()-interval '33 days', NULL,                    now()-interval '3 days', 'refund_issued'),
   ('60000000-0000-0000-0000-000000000008', '10000000-0000-0000-0000-000000000001', 'NW-1008', 'sofia.rossi@example.com', 'Sofia Rossi', '20121', 'IT',
    'delivered',      32.00, 'EUR', 'DHL', 'JD014600000000000008', now()-interval '9 days', now()-interval '8 days', now()-interval '4 days', NULL, NULL, 'refund_review_fixture');
+
+-- Order references preserved from the published v1/v2 eval cases.
+INSERT INTO demo.shop_orders (tenant_id, order_number, customer_email, customer_name,
+                             status, total_amount, currency, placed_at, delivered_at,
+                             estimated_delivery_at, scenario)
+SELECT '10000000-0000-0000-0000-000000000001', 'NW-' || order_id,
+       'eval-order-' || order_id || '@example.test', 'Northwind Eval Customer',
+       status, 49.00, 'USD', now() - interval '14 days',
+       CASE WHEN status = 'delivered' THEN now() - interval '7 days' END,
+       CASE WHEN status = 'shipped' THEN now() - interval '4 days' END,
+       'published_eval_reference'
+FROM (VALUES
+  (2011,'processing'),(2012,'shipped'),(2013,'processing'),(2014,'shipped'),(2015,'processing'),
+  (2021,'shipped'),(2022,'delivered'),(2023,'shipped'),(2024,'shipped'),(2025,'shipped'),
+  (2031,'delivered'),(2032,'delivered'),(2033,'delivered'),(2034,'delivered'),(2035,'delivered'),
+  (2041,'paid'),(2042,'payment_failed'),(2043,'paid'),(2044,'paid'),(2045,'pending'),
+  (3011,'processing'),(3012,'delivered'),(3013,'delivered'),(3014,'paid'),(3015,'delivered')
+) fixture(order_id, status);
 
 INSERT INTO demo.shop_order_items (order_id, sku, name, quantity, unit_price) VALUES
   ('60000000-0000-0000-0000-000000000001', 'JKT-DEN-M',   'Denim Jacket (M)',       1, 129.00),

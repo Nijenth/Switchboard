@@ -1,9 +1,14 @@
 \ir check_helpers.sql
 BEGIN;
 SELECT pg_temp.expect_value('loader authenticated as config login', 'SELECT session_user::text', 'switchboard_config_loader');
-SELECT pg_temp.expect_value('four released pack versions loaded', 'SELECT count(*)::text FROM public.packs', '4');
+SELECT pg_temp.expect_value('five released pack versions loaded', 'SELECT count(*)::text FROM public.packs', '5');
 SELECT pg_temp.expect_value('versioned ecommerce starter evals loaded',
   $q$SELECT count(*)::text FROM public.eval_cases WHERE pack_key='ecommerce_support' AND pack_version=1$q$, '61');
+SELECT pg_temp.expect_value('Northwind uses ecommerce support v3',
+  $q$SELECT p.version::text FROM public.tenant_packs tp JOIN public.packs p ON p.id=tp.pack_id
+      WHERE tp.tenant_id='10000000-0000-0000-0000-000000000001' AND p.key='ecommerce_support'$q$, '3');
+SELECT pg_temp.expect_value('ecommerce support v3 evals loaded',
+  $q$SELECT count(*)::text FROM public.eval_cases WHERE pack_key='ecommerce_support' AND pack_version=3$q$, '110');
 SELECT pg_temp.expect_value('Northwind pack knowledge loaded',
   $q$SELECT count(*)::text FROM public.knowledge_documents
       WHERE pack_key='ecommerce_support' AND source_uri LIKE 'knowledge/%'$q$, '2');
