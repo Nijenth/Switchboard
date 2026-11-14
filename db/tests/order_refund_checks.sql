@@ -139,6 +139,47 @@ SELECT pg_temp.expect_value('original refund stays pending after refused edit',
        FROM actions a JOIN approval_requests r ON r.subject_id=a.id
       WHERE a.idempotency_key='edited-refund'$q$, 'true');
 ROLLBACK TO SAVEPOINT edited_refund;
+
+SAVEPOINT approved_unclaimed_refund;
+UPDATE tenant_settings SET approval_claim_window_minutes = 5
+ WHERE tenant_id = '10000000-0000-0000-0000-000000000001';
+SELECT pg_temp.propose_fixture_refund('approved-unclaimed-refund','25.00') \g /dev/null
+INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
+SELECT tenant_id,case_id,'action',id,'Review fixture refund'
+  FROM actions WHERE idempotency_key='approved-unclaimed-refund';
+-- A recorded approval without subject promotion models the legacy pending action shape.
+SELECT public.record_approval_decision(r.id,'20000000-0000-0000-0000-000000000002','approved','api')
+  FROM approval_requests r JOIN actions a ON a.id=r.subject_id
+ WHERE a.idempotency_key='approved-unclaimed-refund' \g /dev/null
+SELECT pg_temp.expect_value('approved request with unpromoted action is still reserved',
+  $q$SELECT a.status FROM actions a JOIN approval_requests r ON r.subject_id=a.id
+      WHERE a.idempotency_key='approved-unclaimed-refund' AND r.status='approved'$q$, 'pending_approval');
+SELECT pg_temp.expect_value('unclaimed refund inside its claim window stays live',
+  $q$SELECT public.cancel_unclaimed_approved_actions()::text$q$, '0');
+UPDATE approval_requests SET resolved_at = clock_timestamp() - interval '6 minutes'
+ WHERE subject_id=(SELECT id FROM actions WHERE idempotency_key='approved-unclaimed-refund');
+SELECT set_config('app.tenant_id', '91000000-0000-0000-0000-000000000001', true) \g /dev/null
+SELECT pg_temp.expect_value('another tenant cannot cancel the overdue refund',
+  $q$SELECT public.cancel_unclaimed_approved_actions()::text$q$, '0');
+SELECT set_config('app.tenant_id', '10000000-0000-0000-0000-000000000001', true) \g /dev/null
+SELECT pg_temp.expect_value('tenant claim window cancels the unpromoted refund',
+  $q$SELECT public.cancel_unclaimed_approved_actions()::text$q$, '1');
+SELECT pg_temp.expect_value('cancellation is idempotent',
+  $q$SELECT public.cancel_unclaimed_approved_actions()::text$q$, '0');
+SELECT pg_temp.expect_value('only core receives application execute permission',
+  $q$SELECT (has_function_privilege('app_core','public.cancel_unclaimed_approved_actions()','EXECUTE')
+        AND NOT has_function_privilege('app_n8n_mock','public.cancel_unclaimed_approved_actions()','EXECUTE')
+        AND NOT has_function_privilege('app_config_loader','public.cancel_unclaimed_approved_actions()','EXECUTE')
+        AND NOT has_function_privilege('app_reporting','public.cancel_unclaimed_approved_actions()','EXECUTE'))::text$q$, 'true');
+SELECT pg_temp.expect_value('cancelled approved refund cannot be claimed or consumed',
+  $q$SELECT (a.status='cancelled' AND r.status='approved'
+        AND public.claim_mock_action(a.id,'fixture',sha256('unclaimed'::bytea)) IS NULL
+        AND public.consume_mock_grant(a.id,'fixture',sha256('unclaimed'::bytea)) IS NULL)::text
+      FROM actions a JOIN approval_requests r ON r.subject_id=a.id
+     WHERE a.idempotency_key='approved-unclaimed-refund'$q$, 'true');
+SELECT pg_temp.propose_fixture_refund('fresh-after-claim-window','25.00') \g /dev/null
+ROLLBACK TO SAVEPOINT approved_unclaimed_refund;
+
 SELECT pg_temp.expect_error('verified order cannot authorize a different order',
   $q$SELECT pg_temp.propose_fixture_refund('different-order','25.00','NW-1010')$q$,
   'requires verified identity for the same message and order');
@@ -162,6 +203,10 @@ SELECT pg_temp.expect_error('approved refund amount and currency are frozen',
 SELECT pg_temp.expect_value('approved matching refund can be claimed',
   $q$SELECT (public.claim_mock_action(id,'fixture',sha256('refund-grant'::bytea)) IS NOT NULL)::text
        FROM actions WHERE idempotency_key='scoped-refund'$q$, 'true');
+UPDATE approval_requests SET resolved_at = clock_timestamp() - interval '61 minutes'
+ WHERE subject_id=(SELECT id FROM actions WHERE idempotency_key='scoped-refund');
+SELECT pg_temp.expect_value('watchdog leaves a claimed refund executing past the window',
+  $q$SELECT public.cancel_unclaimed_approved_actions()::text$q$, '0');
 SELECT pg_temp.expect_value('two workers cannot both claim the refund',
   $q$SELECT (public.claim_mock_action(id,'second',sha256('another-refund-grant'::bytea)) IS NULL)::text
        FROM actions WHERE idempotency_key='scoped-refund'$q$, 'true');

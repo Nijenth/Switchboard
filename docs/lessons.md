@@ -17,3 +17,7 @@
 ## n8n expressions
 
 - The refund harness reproduced an expression syntax error when a nested object placed two closing braces next to each other inside an HTTP body expression. Keep the nested braces apart so they cannot be parsed as the expression terminator. Test the workflow in the pinned n8n runtime because the underlying JavaScript alone can parse successfully.
+
+## Action state exits
+
+- Approval expiry only handled pending requests. An approved request could leave an unclaimed action reserving its order indefinitely. Migration 026 gives the SLA watchdog a claim deadline and audits cancellation. Check the actual caller for every exit when a live state reserves a resource.

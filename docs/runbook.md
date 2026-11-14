@@ -83,6 +83,15 @@ refund action, releases the per-order live lock, and lets a fresh inbound messag
 a new refund. Reviewer edits that change a refund amount or currency are refused with
 `409`, leaving the original request pending.
 
+Apply migration 026 and deploy core before reimporting `wf_sla_watchdog`.
+The workflow calls `POST /actions/approvals/expire-unclaimed` with the approval
+poster credential to cancel approved actions that have never been claimed.
+The window starts at approval and uses the tenant's
+`approval_claim_window_minutes` (default 60). Look for an `action.cancelled`
+event with reason `approval_claim_window_elapsed` when a fresh message can
+propose a refund again. If the action already has a claim, use the reconciliation
+procedure below and keep the reservation while evidence is inconclusive.
+
 ## Offline drafting
 
 Apply migration 018 and set `SWITCHBOARD_DRAFT_CREDENTIALS` to a JSON list of tenant IDs and

@@ -54,6 +54,36 @@
       }
     },
     {
+      "id": "SwitchboardSla1-unclaimed",
+      "name": "Cancel unclaimed approved actions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Load service URLs').item.json.core_base_url + '/actions/approvals/expire-unclaimed' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "SwitchboardApprovalAuth",
+          "name": "Switchboard Approval"
+        }
+      }
+    },
+    {
       "id": "SwitchboardSla1-config",
       "name": "Load service URLs",
       "type": "n8n-nodes-base.executeWorkflow",
@@ -92,6 +122,11 @@
         [
           {
             "node": "Expire overdue approvals",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cancel unclaimed approved actions",
             "type": "main",
             "index": 0
           }
