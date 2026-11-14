@@ -2060,6 +2060,16 @@ def test_refund_approval_expiry_and_edited_amount_refusal(
             "UPDATE public.staff_users SET slack_user_id = %s WHERE tenant_id = %s AND id = %s",
             (slack_user, NORTHWIND, manager),
         )
+        # The seeded channel is not a valid Slack ID; set a real-looking one so this test
+        # does not depend on test_n8n_outbound having run first.
+        prev_channel_row = loader.execute(
+            "SELECT notify_channel FROM public.queues WHERE tenant_id = %s AND key = %s",
+            (NORTHWIND, "customer_support"),
+        ).fetchone()
+        loader.execute(
+            "UPDATE public.queues SET notify_channel = %s WHERE tenant_id = %s AND key = %s",
+            ("C0REFUND01", NORTHWIND, "customer_support"),
+        )
         loader.commit()
 
     try:
@@ -2327,5 +2337,9 @@ def test_refund_approval_expiry_and_edited_amount_refusal(
             loader.execute(
                 "UPDATE public.staff_users SET slack_user_id = %s WHERE tenant_id = %s AND id = %s",
                 (prev_slack_user_row[0] if prev_slack_user_row else None, NORTHWIND, manager),
+            )
+            loader.execute(
+                "UPDATE public.queues SET notify_channel = %s WHERE tenant_id = %s AND key = %s",
+                (prev_channel_row[0] if prev_channel_row else None, NORTHWIND, "customer_support"),
             )
             loader.commit()
