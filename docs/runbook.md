@@ -38,7 +38,7 @@ workflow. Only the send adapter is wired for mock dispatch.
 Run `bash scripts/test_core.sh --offline-n8n` with the pinned images already cached to
 exercise the synthetic email through Slack and the mock receipt.
 
-## Pack lookups and identity (ADR 0019)
+## Pack lookups and identity (ADRs 0019, 0021, 0022, 0023)
 
 Set `SWITCHBOARD_LOOKUP_CREDENTIALS` to a JSON list of tenant IDs and tokens. After
 `/understand` stores a validated extraction, call `POST /lookups` with the case and message IDs.
@@ -47,9 +47,15 @@ credential, sending the tool result as `output`. Call `/lookups` again until `pe
 `waiting` explains anything not proposed: `identity_unverified` means the identity check did not
 verify the sender, and `input_unavailable` means no validated extraction supplied the inputs.
 
-Failure modes: a result that does not match the tool's output schema returns 422 and leaves the
-action executing until its lease expires; reconcile it like any other mock action. A failed or
-unknown lookup stays in `waiting` with its status because lookup keys are fixed per message.
+A 409 at claim or consume can indicate missing identity authority. Verify the sender for the
+specific inbound message and order before attempting dispatch. For a 422 from lookup completion,
+correct the connector result and submit it with the same consumed grant before the lease expires.
+After expiry, claim the read action again. A failed or unknown lookup stays in `waiting` with
+its status because lookup keys are fixed per message.
+After migration 023, check the tool registry if a verified message still gets a 409. Every
+identity-gated tool must require `order_number` in its input schema. Older refund actions stay
+blocked from dispatch, including those with an outstanding grant. The refund slice will
+publish replacement tool keys with the required contract.
 If a lookup completes while `/drafts` waits for the model, `/drafts` returns 409
 `Draft evidence changed`; call it again to draft from the new result.
 

@@ -48,7 +48,8 @@ def lookup_evidence(
         FROM public.actions a JOIN public.tools t ON t.key=a.tool_key AND t.active
         WHERE a.tenant_id=%s AND a.case_id=%s AND a.message_id=%s AND a.risk_level='read'
           AND a.status='executed' AND jsonb_typeof(a.output)='object'
-          AND (a.tool_key <> 'order_lookup' OR public.order_identity_is_verified(a))
+          AND public.tool_identity_authorized(a,t)
+          AND (NOT t.requires_verified_identity OR public.valid_tool_output(t.output_schema,a.output))
         ORDER BY a.executed_at,a.id
         """,
         (tenant, request.case_id, request.message_id),
