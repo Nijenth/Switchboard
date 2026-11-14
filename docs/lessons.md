@@ -21,3 +21,4 @@
 ## Action state exits
 
 - Approval expiry only handled pending requests. An approved request could leave an unclaimed action reserving its order indefinitely. Migration 026 gives the SLA watchdog a claim deadline and audits cancellation. Check the actual caller for every exit when a live state reserves a resource.
+- Review promotion was split between the migration 012 Slack trigger and the API route. Migration 027 puts both channels through the same transaction and subject guards. Trace the request update and its triggers as well as the decision insert when reviewing approval transitions.

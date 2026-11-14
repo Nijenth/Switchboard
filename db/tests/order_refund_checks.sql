@@ -63,7 +63,36 @@ SELECT pg_temp.expect_error('newer ineligibility stops approval via ' || channel
        FROM approval_requests r JOIN actions a ON a.id=r.subject_id
       WHERE a.idempotency_key='approval-evidence-refund'$q$,channel), 'matching current eligibility evidence')
   FROM (VALUES ('slack'),('api')) channels(channel);
+SELECT pg_temp.expect_value('a refused refund approval leaves both rows pending and no decision',
+  $q$SELECT (r.status='pending' AND r.resolved_at IS NULL AND a.status='pending_approval'
+        AND NOT EXISTS (SELECT FROM approval_decisions d WHERE (d.tenant_id,d.request_id)=(r.tenant_id,r.id)))::text
+      FROM approval_requests r JOIN actions a ON (a.tenant_id,a.id)=(r.tenant_id,r.subject_id)
+     WHERE a.idempotency_key='approval-evidence-refund'$q$, 'true');
 ROLLBACK TO SAVEPOINT approval_evidence;
+
+SAVEPOINT stale_refund_approval;
+SELECT pg_temp.propose_fixture_refund('stale-approval-refund','25.00') \g /dev/null
+INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
+SELECT tenant_id,case_id,'action',id,'Review fixture refund'
+  FROM actions WHERE idempotency_key='stale-approval-refund';
+INSERT INTO policy_decisions (tenant_id,case_id,pack_id,trace_id,decision,rule_id,
+                              rule_source,reason,policy_version)
+SELECT c.tenant_id,c.id,c.pack_id,a.trace_id,'escalate','fixture','global','Escalate','1'
+  FROM actions a JOIN cases c ON (c.tenant_id,c.id)=(a.tenant_id,a.case_id)
+ WHERE a.idempotency_key='stale-approval-refund';
+SELECT pg_temp.expect_error('a stricter case policy prevents refund promotion',
+  $q$SELECT public.record_approval_decision(r.id,'20000000-0000-0000-0000-000000000002','approved','api')
+       FROM approval_requests r JOIN actions a ON (a.tenant_id,a.id)=(r.tenant_id,r.subject_id)
+      WHERE a.idempotency_key='stale-approval-refund'$q$, 'stricter policy decision requires fresh approval');
+SELECT pg_temp.expect_value('promotion failure rolls back the decision and request update',
+  $q$SELECT (r.status='pending' AND r.resolved_at IS NULL AND a.status='pending_approval'
+        AND a.approved_by IS NULL AND NOT EXISTS (
+          SELECT FROM approval_decisions d WHERE (d.tenant_id,d.request_id)=(r.tenant_id,r.id)
+        ))::text
+      FROM approval_requests r JOIN actions a ON (a.tenant_id,a.id)=(r.tenant_id,r.subject_id)
+     WHERE a.idempotency_key='stale-approval-refund'$q$, 'true');
+ROLLBACK TO SAVEPOINT stale_refund_approval;
+
 SAVEPOINT rejected_refund;
 SELECT pg_temp.propose_fixture_refund('rejected-refund','25.00') \g /dev/null
 INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
@@ -147,10 +176,12 @@ SELECT pg_temp.propose_fixture_refund('approved-unclaimed-refund','25.00') \g /d
 INSERT INTO approval_requests (tenant_id,case_id,subject_type,subject_id,reason)
 SELECT tenant_id,case_id,'action',id,'Review fixture refund'
   FROM actions WHERE idempotency_key='approved-unclaimed-refund';
--- A recorded approval without subject promotion models the legacy pending action shape.
+-- Simulate a row created before shared promotion, within this disposable savepoint.
+ALTER TABLE public.approval_requests DISABLE TRIGGER approval_requests_promote_approved_subject;
 SELECT public.record_approval_decision(r.id,'20000000-0000-0000-0000-000000000002','approved','api')
   FROM approval_requests r JOIN actions a ON a.id=r.subject_id
  WHERE a.idempotency_key='approved-unclaimed-refund' \g /dev/null
+ALTER TABLE public.approval_requests ENABLE TRIGGER approval_requests_promote_approved_subject;
 SELECT pg_temp.expect_value('approved request with unpromoted action is still reserved',
   $q$SELECT a.status FROM actions a JOIN approval_requests r ON r.subject_id=a.id
       WHERE a.idempotency_key='approved-unclaimed-refund' AND r.status='approved'$q$, 'pending_approval');
@@ -195,8 +226,9 @@ SELECT pg_temp.expect_error('one live refund per tenant and order',
   $q$SELECT pg_temp.propose_fixture_refund('parallel-refund','25.00')$q$, 'actions_one_live_order_money');
 SELECT public.record_approval_decision(r.id,'20000000-0000-0000-0000-000000000002','approved','api')
   FROM approval_requests r JOIN actions a ON a.id=r.subject_id WHERE a.idempotency_key='scoped-refund' \g /dev/null
-UPDATE actions SET status='approved',approved_by='20000000-0000-0000-0000-000000000002'
- WHERE idempotency_key='scoped-refund';
+SELECT pg_temp.expect_value('an API refund decision promotes the reviewed action',
+  $q$SELECT (status='approved' AND approved_by='20000000-0000-0000-0000-000000000002')::text
+      FROM actions WHERE idempotency_key='scoped-refund'$q$, 'true');
 SELECT pg_temp.expect_error('approved refund amount and currency are frozen',
   $q$UPDATE actions SET amount=99,currency='EUR' WHERE idempotency_key='scoped-refund'$q$,
   'payload is frozen');

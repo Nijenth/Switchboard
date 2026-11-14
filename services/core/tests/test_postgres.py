@@ -2067,9 +2067,140 @@ def prepare_refund_message(
     return body
 
 
-@pytest.mark.parametrize(("channel", "claim"), [("api", False), ("slack", False), ("api", True)])
-def test_approved_refund_claim_window(
-    settings: Settings, credentials: dict[str, str], channel: str, claim: bool
+def assert_refund_review_state(
+    settings: Settings, action_id: str, approval_id: str, expected: tuple[object, ...]
+) -> None:
+    with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+        set_northwind(conn)
+        assert (
+            conn.execute(
+                """SELECT a.status,a.approved_by,r.status,count(d.id)
+                 FROM public.actions a
+                 JOIN public.approval_requests r ON (r.tenant_id,r.subject_id)=(a.tenant_id,a.id)
+                 LEFT JOIN public.approval_decisions d ON (d.tenant_id,d.request_id)=(r.tenant_id,r.id)
+                WHERE a.tenant_id=%s AND a.id=%s AND r.id=%s
+                GROUP BY a.status,a.approved_by,r.status""",
+                (NORTHWIND, action_id, approval_id),
+            ).fetchone()
+            == expected
+        )
+
+
+def revoke_refund_eligibility(
+    api: TestClient, settings: Settings, worker: str, message_id: str
+) -> None:
+    with create_pool(settings) as pool, pool.connection() as conn, conn.transaction():
+        set_northwind(conn)
+        replacement = conn.execute(
+            """INSERT INTO public.actions
+                   (tenant_id,case_id,message_id,trace_id,idempotency_key,tool_key,risk_level,input,status)
+               SELECT tenant_id,case_id,message_id,trace_id,%s,tool_key,risk_level,input,'proposed'
+                 FROM public.actions
+                WHERE tenant_id=%s AND message_id=%s AND tool_key='order_refund_eligibility'
+               RETURNING id""",
+            (str(uuid4()), NORTHWIND, message_id),
+        ).fetchone()
+        assert replacement is not None
+    action = f"/actions/{replacement[0]}"
+    claimed = api.post(action + "/claim", headers=bearer(worker))
+    assert claimed.status_code == 200, claimed.text
+    grant = claimed.json()["grant"]
+    assert (
+        api.post(action + "/consume", headers=bearer(worker), json={"grant": grant}).status_code
+        == 200
+    )
+    completed = api.post(
+        action + "/complete",
+        headers=bearer(worker),
+        json={
+            "grant": grant,
+            "external_ref": str(uuid4()),
+            "output": {
+                "eligible": False,
+                "reason": "window_expired",
+                "refundable_amount": None,
+                "currency": None,
+            },
+        },
+    )
+    assert completed.status_code == 200, completed.text
+
+
+def execute_reviewed_refund(
+    api: TestClient, settings: Settings, worker: str, action: str, order: str
+) -> None:
+    with psycopg.connect(
+        host=settings.db_host,
+        port=settings.db_port,
+        dbname=settings.db_name,
+        user="switchboard_n8n_mock",
+        password=environ["SWITCHBOARD_N8N_MOCK_PASSWORD"],
+        connect_timeout=3,
+    ) as mock:
+        with mock.transaction():
+            verify_cluster(mock, "switchboard_n8n_mock")
+            mock.execute(
+                """INSERT INTO demo.shop_orders
+                       (tenant_id,order_number,customer_email,customer_name,status,total_amount,
+                        currency,placed_at,delivered_at)
+                   VALUES (%s,%s,'sofia.rossi@example.com','Fixture Customer','delivered',
+                           32,'EUR',now()-interval '2 days',now()-interval '1 day')""",
+                (NORTHWIND, order),
+            )
+        claimed = api.post(action + "/claim", headers=bearer(worker))
+        assert claimed.status_code == 200, claimed.text
+        grant = claimed.json()["grant"]
+        consumed = api.post(action + "/consume", headers=bearer(worker), json={"grant": grant})
+        assert consumed.status_code == 200, consumed.text
+        dispatch = consumed.json()
+        payload = dispatch["input"]
+        with mock.transaction():
+            receipt = mock.execute(
+                "SELECT demo.issue_order_refund(%s,%s,%s,%s,%s,%s)",
+                (
+                    dispatch["destination"],
+                    payload["order_number"],
+                    dispatch["idempotency_key"],
+                    payload["amount"],
+                    payload["currency"],
+                    dispatch["expires_at"],
+                ),
+            ).fetchone()
+            assert receipt is not None and receipt[0] is not None
+        ref = str(receipt[0])
+        completed = api.post(
+            action + "/complete",
+            headers=bearer(worker),
+            json={
+                "grant": grant,
+                "external_ref": ref,
+                "output": {"refund_reference": ref, "status": "refunded"},
+            },
+        )
+        assert completed.status_code == 200, completed.text
+        assert mock.execute(
+            """SELECT refund_reference,amount,currency FROM demo.order_refunds
+                WHERE tenant_id=%s AND order_number=%s""",
+            (NORTHWIND, order),
+        ).fetchall() == [(receipt[0], 32, "EUR")]
+
+
+@pytest.mark.parametrize(
+    ("channel", "scenario"),
+    [
+        ("api", "unclaimed"),
+        ("slack", "unclaimed"),
+        ("api", "claimed"),
+        ("api", "execute"),
+        ("slack", "execute"),
+        ("api", "revoked"),
+        ("slack", "revoked"),
+        ("api", "wrong_role"),
+        ("slack", "wrong_role"),
+    ],
+)
+def test_refund_approval_and_claim_window(
+    settings: Settings, credentials: dict[str, str], channel: str, scenario: str
 ) -> None:
     reviewer = uuid4()
     lookup, worker, poster, refund, review = (token_hex(32) for _ in range(5))
@@ -2126,8 +2257,14 @@ def test_approved_refund_claim_window(
             )
             loader.execute(
                 """INSERT INTO public.staff_users (id,tenant_id,email,name,role,slack_user_id)
-                   VALUES (%s,%s,%s,'Fixture Manager','manager',%s)""",
-                (reviewer, NORTHWIND, f"{reviewer}@example.test", slack_user),
+                   VALUES (%s,%s,%s,'Fixture Reviewer',%s,%s)""",
+                (
+                    reviewer,
+                    NORTHWIND,
+                    f"{reviewer}@example.test",
+                    "agent" if scenario == "wrong_role" else "manager",
+                    slack_user,
+                ),
             )
         try:
             with TestClient(create_app(config)) as api:
@@ -2140,6 +2277,8 @@ def test_approved_refund_claim_window(
                     proposal.json()[key] for key in ("action_id", "approval_id")
                 )
                 action = f"/actions/{action_id}"
+                if scenario == "revoked":
+                    revoke_refund_eligibility(api, settings, worker, first["message_id"])
                 if channel == "slack":
                     ts = f"{int(time())}.123456"
                     posted = api.post(
@@ -2185,11 +2324,31 @@ def test_approved_refund_claim_window(
                         headers=bearer(review),
                         json={"decision": "approved"},
                     )
+                if scenario in ("revoked", "wrong_role"):
+                    assert approved.status_code == 409, approved.text
+                    assert_refund_review_state(
+                        settings, action_id, approval_id, ("pending_approval", None, "pending", 0)
+                    )
+                    return
                 assert approved.status_code == 200, approved.text
+                assert_refund_review_state(
+                    settings, action_id, approval_id, ("approved", reviewer, "approved", 1)
+                )
+                if scenario == "execute":
+                    pending = api.get(
+                        "/actions/dispatch/order_refund_issue", headers=bearer(worker)
+                    )
+                    assert {"action_id": action_id} in pending.json()
+                    execute_reviewed_refund(api, settings, worker, action, order)
+                    assert_refund_review_state(
+                        settings, action_id, approval_id, ("executed", reviewer, "approved", 1)
+                    )
+                    return
 
                 assert api.post(watchdog, headers=bearer(worker)).status_code == 403
                 assert api.post(watchdog, headers=bearer(poster)).json() == 0
                 grant = token_hex(32)
+                claim = scenario == "claimed"
                 if claim:
                     claimed = api.post(action + "/claim", headers=bearer(worker))
                     assert claimed.status_code == 200, claimed.text
