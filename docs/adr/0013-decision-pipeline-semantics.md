@@ -42,4 +42,4 @@ pattern checks, so `safety` and `harassment` were never raised.
 A stricter pack rule can supersede an earlier rule even when it matched on missing data.
 Global guards win ties against pack decisions. An escalation triggered by missing data
 outranks G4. Existing decision records keep their policy version. New publications use
-`engine:2`. The 90% engine coverage measurement is pending owner approval for a coverage tool.
+`engine:2`. CI enforces the engine coverage threshold under ADR 0015.
