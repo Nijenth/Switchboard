@@ -374,6 +374,33 @@ be an unhandled 500 instead of the 502 message.
 | `scripts/test_core.sh --offline-n8n` | 208 passed, 0 skipped (437.47s); eval runner 110 cases × 2 (`decision_accuracy: 1`, `gate_violations: 0`) | Includes `test_demo_live.py` lifecycle, `test_console.py`, both lost-completion assertions, and console redelivery idempotency check |
 | Disposable Docker cleanup check | 0 `switchboard-core-check` containers/networks, 0 `switchboard-n8n-test` volumes | Verified via `docker --context desktop-linux` after `--offline-n8n` |
 
+### Independent rerun and read of `0597ecd` (second builder, 2026-11-15)
+
+- **Rerun on `96a33cc` (`observed`):** every row of the table above was rerun
+  and gave the same counts (gateway 80 passed; `db-check` 293 PASS, 0 FAIL;
+  `test_core.sh` 189 passed / 19 skipped; `--offline-ai` 206 / 2;
+  `--offline-n8n` 208 / 0 on its first run; no leftover containers or
+  volumes). The n8n suite ran once, so this adds no evidence about the
+  intermittent 5-second timeout.
+- **Read of the gateway fixes 9–15 (`observed` by reading; not a second
+  independent review):** no defect found.
+- **Three gaps recorded in a docs-only commit after `96a33cc`** (no code
+  changed, so the results above still apply):
+  1. Core's dispatch does not carry the thread fields `send_reply` now
+     requires, so every real Gmail send would be refused (fails closed).
+     ADR 0032, "What is deliberately not built here", item 7.
+  2. The runbook's `/execute` table now covers the 422
+     `{"status": "failed"}` answer and the 409 lease-elapsed answer.
+  3. The lease deadline trusts the gateway's wall clock; skew beyond the
+     8-second reserve is not handled or tested. ADR 0032, "Known limits".
+- **Smaller points, not fixed (`inferred` from reading, untested against
+  Shopify):** the order search asks for `first: 2`, so on a store where
+  `name:` is a prefix match and three or more orders share the prefix the
+  exact order can be missed (refused, fails closed). The refund amount is
+  checked against the original payment, not against what is still
+  refundable after earlier refunds; Shopify is relied on to reject an
+  over-refund.
+
 ### Not verified — read this before trusting the adapters
 
 - **No request has ever been sent to Shopify or Google.** The request and
@@ -403,4 +430,8 @@ be an unhandled 500 instead of the 502 message.
    consume, complete and reconcile work for `adapter = 'real'`; the claim
    design choice from ADR 0032 (to prevent claiming a mock action before real
    `consume` returns 409); the reconciler lookup endpoint on the gateway; the
-   n8n real branches; and Gmail OAuth token refresh.
+   n8n real branches; Gmail OAuth token refresh; the reply thread fields in
+   core's dispatch (ADR 0032 item 7); and a lease deadline that does not
+   depend on the gateway's clock.
+6. Keep the gateway and database hosts time-synchronised (runbook,
+   "Connector gateway").

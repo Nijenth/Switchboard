@@ -109,6 +109,19 @@ AGENTS.md itself is not edited in this slice.
 5. **Gmail OAuth token refresh.** The gateway takes an access token from
    configuration. A refresh flow is needed before real use.
 6. **Read tools on real adapters** (order lookup, identity check).
+7. **The fields `send_reply` needs from core.** The Gmail adapter refuses a
+   draft unless it carries a non-empty `subject`, a `thread_id`, an
+   `in_reply_to` Message-ID and a `references` list ending in that
+   Message-ID. Core's consume payload (latest definition:
+   `db/migrations/024_order_refund_execution.sql`) carries only `id`,
+   `channel`, `recipient`, `subject` and `body`, and `drafts.subject` is
+   nullable. So even with real dispatch enabled, every `send_reply` would be
+   refused with HTTP 422 and nothing would be sent. The migration that
+   enables real dispatch must also add the provider thread ID and the parent
+   message's `Message-ID` and `References` to the dispatch, taken from the
+   stored inbound message and never from n8n or the model, and must decide
+   what subject a reply uses when the draft has none. The gateway test stub
+   supplies these fields itself, so the gateway tests do not show this gap.
 
 ## Every new live state and its exit (ADR 0026)
 
@@ -131,6 +144,19 @@ one lease (45 seconds):
   were written from public API documentation. The fixtures are **synthetic**,
   not recorded from a real Shopify development store or Gmail mailbox, and no
   request has been sent to Shopify or Google.
+- **The lease deadline trusts the gateway's wall clock.** The remaining lease
+  is computed as core's `expires_at` minus the gateway's own current time.
+  If the gateway's clock is behind core's database clock, the gateway
+  believes it has more time than it has. The 8-second completion reserve is
+  the only margin. With more skew than that, a provider write can land after
+  the lease expired. Core then refuses the completion and the action becomes
+  `unknown_outcome`, so it is never retried blindly, but the reconciler could
+  look for the effect before the late write lands and record `failed` for an
+  action that then takes effect. A deployment must keep the gateway and
+  database hosts time-synchronised to well under 8 seconds. No test covers
+  skew. A design that removes the dependency (core returning the remaining
+  seconds instead of an absolute time) belongs with the real-dispatch
+  migration.
 - The Shopify API version is required configuration and is not defaulted,
   because no version has been verified.
 - Whoever can read the gateway's environment can use the provider
