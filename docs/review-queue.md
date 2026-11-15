@@ -22,6 +22,21 @@ bash scripts/test_core.sh --offline-ai
 bash scripts/test_core.sh --offline-n8n
 ```
 
+## Fix pass after Codex's review (2026-11-15)
+
+Pre-fix tips, recorded before any fix. Each is also a local tag, so the
+reviewer can diff only the fixes even though branches 02 and 03 are rebased.
+The tags are local only; nothing is pushed.
+
+| Branch | Pre-fix tip | Local tag |
+|---|---|---|
+| `build/01-live-stack` | `0e54dab0cdc8b7ad8e4f8d41fb77db4c07122efe` | `pre-fix/01-live-stack` |
+| `build/02-live-console` | `23e8993379781e2d82c1e1c99718a667c6472bcb` | `pre-fix/02-live-console` |
+| `build/03-gate3-grants` | `6659f289359035f86c46ac862b9b9072e925cdde` | `pre-fix/03-gate3-grants` |
+
+Fixes are new commits. Branches 02 and 03 are rebased onto the fixed branch
+below them, so their original commits get new hashes with the same content.
+
 ## Note on the briefs
 
 The slice A and B briefs were not in the repository. Slice A was built from
