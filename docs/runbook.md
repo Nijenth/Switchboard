@@ -188,10 +188,12 @@ disabled. See ADR 0011.
 
 The local rules cover name cues, street formats and postcodes in addition to
 known sender names and structured PII. Run `python -m pytest -qs tests/test_pii_probes.py`
-from `services/core` when changing the rules. The offline pack eval also fails
-on any of its inherited synthetic PII misses. Diagnose misses using case IDs
-and kinds instead of printing the spans. See [ADR 0028](adr/0028-rules-based-pii-redaction.md)
-for the measured results and the independent evaluation needed before real data.
+from `services/core` when changing the rules. The redactor scores 100% on the
+author-written probe set. The informational held-out set has 0/5 exact-span
+matches and 0/4 negatives preserved. Use independently labeled samples to
+evaluate performance before real data. The offline pack eval fails on any
+inherited synthetic PII misses. Diagnose those by case ID and kind and keep raw
+spans out of logs. [ADR 0028](adr/0028-rules-based-pii-redaction.md)
 
 Prototype Microsoft Presidio with locally installed language-specific NER models and custom
 address candidate recognizers. Use libpostal to parse the candidate spans, including

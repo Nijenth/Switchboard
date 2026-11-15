@@ -22,9 +22,10 @@ NAME_PATTERNS = (
     ),
     re.compile(rf"(?m:^[ \t]*)(?i:{GREETING})[ \t]+(?P<name>{PERSON_NAME})(?=,)"),
     re.compile(
-        r"^[ \t]*(?i:thanks|thank you|regards|best regards|merci|cordialement|"
+        r"^[ \t]*(?i:thanks|thank you|regards|best regards|kind regards|merci|cordialement|"
         r"gracias|saludos|danke|viele grüße|mit freundlichen grüßen|obrigad[oa]|cumprimentos)"
-        rf"(?:[ \t]*,[ \t]*|[ \t]*\r?\n[ \t]*)(?P<name>{PERSON_NAME})(?=[ \t]*[.!]?[ \t]*$)",
+        r"[ \t]*(?:,[ \t]*(?:\r?\n[ \t]*)*|(?:\r?\n[ \t]*)+)"
+        rf"(?P<name>{PERSON_NAME})(?=[ \t]*[.!]?[ \t]*\r?$)",
         re.MULTILINE,
     ),
 )

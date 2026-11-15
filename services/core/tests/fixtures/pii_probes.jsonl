@@ -101,3 +101,22 @@
 {"text": "O pedido NW-1003 segue por DHL.", "language": "pt", "kind": "phone", "spans": {}}
 {"text": "O SKU CAP-1003 é o novo modelo.", "language": "pt", "kind": "card", "spans": {}}
 {"text": "A loja abre em maio.", "language": "pt", "kind": "email", "spans": {}}
+{"text":"Thanks,\nEmma Vale","language":"en","kind":"name","spans":{"name":["Emma Vale"]}}
+{"text":"Best regards,\nEmma Vale","language":"en","kind":"name","spans":{"name":["Emma Vale"]}}
+{"text":"Thanks,\n\nEmma Vale","language":"en","kind":"name","spans":{"name":["Emma Vale"]}}
+{"text":"Kind regards,\nEmma Vale","language":"en","kind":"name","spans":{"name":["Emma Vale"]}}
+{"text":"Merci,\nNoé Valmont","language":"fr","kind":"name","spans":{"name":["Noé Valmont"]}}
+{"text":"Cordialement,\n\nLéonie Aubert","language":"fr","kind":"name","spans":{"name":["Léonie Aubert"]}}
+{"text":"Viele Grüße,\r\nNils Dorn\r\n","language":"de","kind":"name","spans":{"name":["Nils Dorn"]}}
+{"text":"Mit freundlichen Grüßen,\n \nFrieda Stein","language":"de","kind":"name","spans":{"name":["Frieda Stein"]}}
+{"text":"Thanks,\nNorthwind Apparel","language":"en","kind":"name","spans":{}}
+{"text":"Merci,\nDHL","language":"fr","kind":"name","spans":{}}
+{"text":"Order 12345 Shipped yesterday","language":"en","kind":"postcode","spans":{},"held_out":true}
+{"text":"I bought 20000 Points last week","language":"en","kind":"postcode","spans":{},"held_out":true}
+{"text":"Is this available for Customer Service to check?","language":"en","kind":"name","spans":{},"held_out":true}
+{"text":"Can I return it for Size Medium?","language":"en","kind":"name","spans":{},"held_out":true}
+{"text":"221B Baker Street","language":"en","kind":"street","spans":{"street":["221B Baker Street"]},"held_out":true}
+{"text":"London NW1 6XE","language":"en","kind":"postcode","spans":{"postcode":["NW1 6XE"]},"held_out":true}
+{"text":"07700 900123","language":"en","kind":"phone","spans":{"phone":["07700 900123"]},"held_out":true}
+{"text":"my name is emma vale","language":"en","kind":"name","spans":{"name":["emma vale"]},"held_out":true}
+{"text":"This is Dana O'Neil writing","language":"en","kind":"name","spans":{"name":["Dana O'Neil"]},"held_out":true}
