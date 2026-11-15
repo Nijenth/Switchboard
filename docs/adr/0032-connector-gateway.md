@@ -65,7 +65,45 @@ AGENTS.md itself is not edited in this slice.
 | Tool | Provider call | Duplicate protection |
 |---|---|---|
 | `order_refund_issue` | Shopify Admin GraphQL: find the order by name, then `refundCreate` | Uses `@idempotent(key: $key)` and stores `switchboard:<idempotency_key>` in the refund note. The gateway checks existing order refunds for that marker first and classifies both fresh and reused refunds by their transaction nodes (`SUCCESS` with `hasNextPage == false` -> executed; `ERROR`/`FAILURE` only -> `failed` HTTP 422; `PENDING`, empty, mixed, paginated, multiple matching refunds, or `refund` paired with `userErrors` -> `UnknownOutcome` HTTP 502). |
-| `send_reply` | Gmail `users.messages.send` with `threadId`, `Subject`, `In-Reply-To`, and `References` | The Message-ID is derived from the idempotency key. The gateway searches `SENT` mail (`labelIds=SENT`, `q=rfc822msgid:...`) first and returns the existing message instead of sending again. |
+| `send_reply` | Gmail `users.messages.send` with `threadId`, `Subject`, `In-Reply-To`, and `References` | The Message-ID is derived from the idempotency key. The gateway searches `SENT` mail (`labelIds=SENT`, `q=rfc822msgid:...`) first and returns the existing message instead of sending again, if that message is in the approved thread. |
+
+**`refundCreate` answers with `refund: null` and `userErrors`:**
+
+Shopify documents this mutation's `userErrors` as `[UserError!]!` with only
+`field` and `message`. Its idempotency guide shows the idempotency errors in
+`userErrors` with `field: null` and a `code`. The mutation does not request
+`code` (it is not on the documented type, and asking for an unknown field
+would fail every refund), but the gateway reads one if it is returned.
+
+| `userErrors` entry | Treated as | Why |
+|---|---|---|
+| `field` is a non-empty list of strings, `message` is a string, no `code` | `Refused` (HTTP 422) | It names the input field Shopify rejected: a validation error, so nothing was written. |
+| `code: IDEMPOTENCY_CONCURRENT_REQUEST` (`field: null`) | `UnknownOutcome` (HTTP 502) | An earlier request with this key is still in progress and may yet write the refund. |
+| `code: IDEMPOTENCY_KEY_PARAMETER_MISMATCH` (`field: null`) | `UnknownOutcome` | The key was used before with other parameters; that request may have taken effect. |
+| Any other `code` | `UnknownOutcome` | No code is known to mean a plain validation error. |
+| `field` null, empty or missing; no `message`; not an object | `UnknownOutcome` | Cannot be shown to mean "nothing happened". |
+
+All entries must be in the first row for the answer to be `Refused`. One
+entry from any other row makes the whole answer `UnknownOutcome`: it is not
+completed, the lease expires to `unknown_outcome`, and the reconciler looks
+for the refund by its note marker. A refund record returned together with
+`userErrors` stays `UnknownOutcome`, as before. The cost of this rule is that
+a real validation error Shopify reports without a field path is reconciled
+(to `failed`) instead of refused at once.
+
+**Gmail thread checks:**
+
+- Before sending, the reply's `subject` must equal the draft's
+  `thread_subject` (the subject of the message being answered) after dropping
+  leading `Re:` prefixes (any case, repeated) and collapsing whitespace. Any
+  other difference, including `Fwd:`, is `Refused` with no provider call.
+  Gmail's documented threading rule needs the `threadId`, the `References` and
+  `In-Reply-To` headers, and a matching `Subject`.
+- A send counts as executed only if the provider's message carries the
+  approved `threadId`. This applies to the send response and to a message
+  found by the `SENT` search. A different or missing `threadId` is
+  `UnknownOutcome`: the message exists or may exist, so it is neither resent
+  nor completed.
 
 **Configuration & credential constraints:**
 - At startup (`Settings.model_post_init`), every Shopify account must use an HTTPS `endpoint` whose hostname equals `destination` so credentials cannot be paired with a mismatched shop endpoint.
@@ -111,14 +149,15 @@ AGENTS.md itself is not edited in this slice.
 6. **Read tools on real adapters** (order lookup, identity check).
 7. **The fields `send_reply` needs from core.** The Gmail adapter refuses a
    draft unless it carries a non-empty `subject`, a `thread_id`, an
-   `in_reply_to` Message-ID and a `references` list ending in that
-   Message-ID. Core's consume payload (latest definition:
+   `in_reply_to` Message-ID, a `references` list ending in that
+   Message-ID, and a `thread_subject` (the subject of the message being
+   answered) that the reply's subject matches. Core's consume payload (latest definition:
    `db/migrations/024_order_refund_execution.sql`) carries only `id`,
    `channel`, `recipient`, `subject` and `body`, and `drafts.subject` is
    nullable. So even with real dispatch enabled, every `send_reply` would be
    refused with HTTP 422 and nothing would be sent. The migration that
    enables real dispatch must also add the provider thread ID and the parent
-   message's `Message-ID` and `References` to the dispatch, taken from the
+   message's `Message-ID`, `References` and subject to the dispatch, taken from the
    stored inbound message and never from n8n or the model, and must decide
    what subject a reply uses when the draft has none. The gateway test stub
    supplies these fields itself, so the gateway tests do not show this gap.

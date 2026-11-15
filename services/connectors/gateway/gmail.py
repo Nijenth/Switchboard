@@ -18,6 +18,12 @@ ADDRESS = re.compile(r"[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]
 API = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 THREAD_ID = re.compile(r"[0-9a-fA-F]+")
 MESSAGE_ID = re.compile(r"<[^<>\s@]+@[^<>\s@]+>")
+REPLY_PREFIX = re.compile(r"^(?:re:\s*)+", re.IGNORECASE)
+
+
+def thread_subject(subject: str) -> str:
+    """The subject Gmail threads on: leading "Re:" prefixes dropped, whitespace collapsed."""
+    return " ".join(REPLY_PREFIX.sub("", subject.strip(), count=1).split())
 
 
 def message_id(mailbox: str, idempotency_key: str) -> str:
@@ -39,10 +45,11 @@ async def send_reply(
     if not isinstance(draft, dict) or not isinstance(key, str) or not key:
         raise Refused("Approved payload has no draft")
     recipient, body, subject = draft.get("recipient"), draft.get("body"), draft.get("subject")
-    thread_id, parent, references = (
+    thread_id, parent, references, original = (
         draft.get("thread_id"),
         draft.get("in_reply_to"),
         draft.get("references"),
+        draft.get("thread_subject"),
     )
     if (
         draft.get("channel") != "email"
@@ -65,6 +72,15 @@ async def send_reply(
         or not all(MESSAGE_ID.fullmatch(item) for item in references.split())
     ):
         raise Refused("Approved draft is not a sendable email")
+    # Gmail only keeps a reply in its thread when the subjects match.
+    if (
+        not isinstance(original, str)
+        or not thread_subject(original)
+        or "\r" in original
+        or "\n" in original
+        or thread_subject(subject) != thread_subject(original)
+    ):
+        raise Refused("Reply subject does not match the original thread's subject")
     identifier = message_id(mailbox, key)
     message = EmailMessage()
     try:
@@ -98,9 +114,13 @@ async def send_reply(
             external_ref = existing[0]["id"]
             if not isinstance(external_ref, str) or not external_ref:
                 raise ValueError("Invalid message ID")
-            return Effect(external_ref=external_ref, reused=True)
-        except (KeyError, TypeError, IndexError, ValueError):
+            found_thread = existing[0].get("threadId")
+        except (KeyError, TypeError, IndexError, ValueError, AttributeError):
             raise Refused("Message search returned an unexpected shape") from None
+        if found_thread != thread_id:
+            # The message exists, but not where the approved reply belongs.
+            raise UnknownOutcome("Earlier send is not in the approved thread")
+        return Effect(external_ref=external_ref, reused=True)
 
     sent = await write(
         client,
@@ -112,4 +132,6 @@ async def send_reply(
     )
     if not isinstance(sent.get("id"), str) or not sent["id"]:
         raise UnknownOutcome("Send response had no message ID")
+    if sent.get("threadId") != thread_id:
+        raise UnknownOutcome("Message was not sent in the approved thread")
     return Effect(external_ref=sent["id"], reused=False)

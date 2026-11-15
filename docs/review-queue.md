@@ -401,6 +401,63 @@ be an unhandled 500 instead of the 502 message.
   refundable after earlier refunds; Shopify is relied on to reject an
   over-refund.
 
+### Two follow-up fixes: Gmail thread checks, Shopify user errors (2026-11-15)
+
+- **Commit:** the commit on `build/03-gate3-grants` titled "Check the Gmail
+  thread and classify Shopify refund user errors" (directly after `c1986b4`).
+  Branches 01 and 02 are untouched. Nothing under `services/core/app` changed.
+- **Fix 1, `gateway/gmail.py`:**
+  - A send is executed only if the provider's message has the approved
+    `threadId`, on both the send response and the `SENT`-search reuse path. A
+    different or missing `threadId` is `UnknownOutcome` (HTTP 502, not
+    completed, not resent).
+  - The reply subject must match the original thread's subject (leading
+    `Re:` allowed, any case, repeated; whitespace collapsed), else `Refused`
+    before any provider call.
+  - **Choice made here, for the owner to confirm:** the original subject is
+    read from a new dispatch field `draft.thread_subject`, supplied by core
+    like the other thread fields. The alternative is to read the thread's
+    subject from Gmail before sending; that costs one more provider call
+    inside the lease. Core does not send `thread_subject` today, so this adds
+    to the contract gap in ADR 0032 item 7 (every real `send_reply` is still
+    refused; fails closed).
+  - The synthetic fixtures `gmail_sent.json` and `gmail_search_found.json` now
+    carry the approved thread ID.
+- **Fix 2, `gateway/shopify.py`:** a `refundCreate` answer with `refund: null`
+  is `Refused` only if every `userErrors` entry names an input field (non-empty
+  `field` path, a `message`, no `code`). `IDEMPOTENCY_CONCURRENT_REQUEST`,
+  `IDEMPOTENCY_KEY_PARAMETER_MISMATCH`, any other `code`, and any entry with
+  no field path are `UnknownOutcome`. The list is in ADR 0032, "Provider
+  rules".
+  - **Found while checking Shopify's public documentation (`observed` by
+    reading the pages on 2026-11-15, not by calling the API):** the
+    `refundCreate` page types `userErrors` as `UserError` (`field`, `message`
+    only), while the idempotency guide shows the idempotency errors inside
+    `userErrors` with a `code`. The two pages do not agree on whether `code`
+    exists for this mutation. So the mutation does not request `code`, and the
+    rule does not depend on it: the idempotency errors are documented with
+    `field: null`, which is already enough to make them `UnknownOutcome`.
+- **Tests added:** wrong and missing `threadId` on send; wrong and missing
+  `threadId` on a search hit; subject mismatch (7 cases) and allowed `Re:`
+  variants (3 cases); 9 `userErrors` cases covering both sides.
+- **Results (`observed`, this Windows machine, working tree as committed):**
+
+  | Check (in `services/connectors`) | Result |
+  |---|---|
+  | `ruff check .` | passed |
+  | `ruff format --check .` | 7 files already formatted |
+  | `mypy gateway` | no issues in 5 source files |
+  | `pytest -q` | 103 passed (80 before this change) |
+
+- **Not rerun:** the core suites, `db-check` and `load_packs --check`. This
+  commit changes only `services/connectors` and docs, which those do not read.
+- **Unverified against live Shopify and Gmail (both fixes):** that Gmail
+  returns `threadId` on `users.messages.send` and on each `users.messages.list`
+  entry as assumed; Gmail's exact subject-matching rule (prefixes other than
+  `Re:`, localized prefixes, case); the real shape, `field` values and
+  presence of `code` in `refundCreate` user errors; and that Shopify
+  validation errors always carry a field path.
+
 ### Not verified — read this before trusting the adapters
 
 - **No request has ever been sent to Shopify or Google.** The request and

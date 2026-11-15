@@ -86,7 +86,8 @@ def reply_dispatch(**overrides: Any) -> dict[str, Any]:
             "id": "97000000-0000-0000-0000-000000000001",
             "channel": "email",
             "recipient": "emma.jones@example.com",
-            "subject": "Where is my order?",
+            "subject": "Re: Where is my order?",
+            "thread_subject": "Where is my order?",
             "thread_id": "18f0abc00000abcd",
             "in_reply_to": "<order-question@example.com>",
             "references": "<earlier@example.com> <order-question@example.com>",
@@ -210,7 +211,7 @@ def test_reply_is_sent_once_with_a_stable_message_id() -> None:
     assert message["In-Reply-To"] == "<order-question@example.com>"
     assert message["References"] == "<earlier@example.com> <order-question@example.com>"
     assert (message["From"], message["To"]) == (MAILBOX, "emma.jones@example.com")
-    assert message["Message-ID"] == expected_id and message["Subject"] == "Where is my order?"
+    assert message["Message-ID"] == expected_id and message["Subject"] == "Re: Where is my order?"
     assert message.get_payload().strip() == "Your order NW-1001 is shipped with UPS."
 
 
@@ -261,6 +262,49 @@ def test_only_settled_refunds_are_completed(statuses: list[str], reused: bool) -
         assert result.status_code == 502
         assert "outcome unknown" in result.json()["detail"]
     assert len(stub.provider_calls) == (1 if reused else 2)
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+IN_PROGRESS = {
+    "field": None,
+    "message": "This request is currently in progress, please try again.",
+    "code": "IDEMPOTENCY_CONCURRENT_REQUEST",
+}
+KEY_MISMATCH = {
+    "field": None,
+    "message": "The same idempotency key cannot be used with different operation parameters.",
+    "code": "IDEMPOTENCY_KEY_PARAMETER_MISMATCH",
+}
+NAMES_FIELD = {"field": ["transactions", "0", "amount"], "message": "Amount is too high"}
+
+
+@pytest.mark.parametrize(
+    ("errors", "status"),
+    [
+        # Names the rejected input field: nothing happened.
+        ([NAMES_FIELD], 422),
+        # Shopify's documented idempotency answers: an earlier request may have taken effect.
+        ([IN_PROGRESS], 502),
+        ([KEY_MISMATCH], 502),
+        # Anything that cannot be shown to mean "nothing happened".
+        ([{**NAMES_FIELD, "code": "SOME_NEW_CODE"}], 502),
+        ([{"field": None, "message": "Something went wrong"}], 502),
+        ([{"field": [], "message": "Something went wrong"}], 502),
+        ([{"message": "Something went wrong"}], 502),
+        (["not an object"], 502),
+        ([NAMES_FIELD, {"field": None, "message": "This request is in progress."}], 502),
+    ],
+)
+def test_refund_user_errors_are_refused_only_when_they_name_an_input_field(
+    errors: list[Any], status: int
+) -> None:
+    body = {"data": {"refundCreate": {"refund": None, "userErrors": errors}}}
+    stub = Stub(refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=body)])
+    result = run(stub)
+    assert result.status_code == status, result.text
+    if status == 502:
+        assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 2  # the write is never repeated
     assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
@@ -496,6 +540,13 @@ def test_refund_that_does_not_fit_the_payment_is_refused_before_the_write(
         {"references": "<a@example.com>\r\nBcc: evil@example.com <order-question@example.com>"},
         {"references": "<other@example.com>"},
         {"references": "invalid-id <order-question@example.com>"},
+        {"subject": "A different subject"},
+        {"subject": "Fwd: Where is my order?"},
+        {"subject": "Where is re: my order?"},
+        {"subject": "Re: Where is my order? (urgent)"},
+        {"thread_subject": None},
+        {"thread_subject": "Re: "},
+        {"thread_subject": "Where is my order?\r\nBcc: evil@example.com"},
     ],
 )
 def test_unsendable_draft_is_refused_without_any_call(draft: dict[str, Any]) -> None:
@@ -505,6 +556,54 @@ def test_unsendable_draft_is_refused_without_any_call(draft: dict[str, Any]) -> 
     with pytest.raises(Refused):
         asyncio.run(gmail.send_reply(client, MAILBOX, MAIL_TOKEN, dispatch, lambda: 5))
     assert stub.provider_calls == []
+
+
+@pytest.mark.parametrize(
+    ("subject", "original"),
+    [
+        ("Where is my order?", "Where is my order?"),
+        ("RE: re:  Where is   my order?", "Where is my order?"),
+        ("Re: Where is my order?", "Re: Where is my order?"),
+    ],
+)
+def test_reply_subject_may_differ_from_the_thread_only_by_reply_prefix(
+    subject: str, original: str
+) -> None:
+    dispatch = reply_dispatch()
+    dispatch["draft"] = {**dispatch["draft"], "subject": subject, "thread_subject": original}
+    client, stub = provider_client([ok("gmail_search_empty.json"), ok("gmail_sent.json")])
+    asyncio.run(gmail.send_reply(client, MAILBOX, MAIL_TOKEN, dispatch, lambda: 5))
+    assert len(stub.provider_calls) == 2
+
+
+@pytest.mark.parametrize("thread", ["18f0dddd0000ffff", None])
+def test_send_answer_in_another_thread_is_unknown_and_not_completed(thread: str | None) -> None:
+    sent = fixture("gmail_sent.json")
+    if thread is None:
+        del sent["threadId"]
+    else:
+        sent["threadId"] = thread
+    stub = Stub(reply_dispatch(), [ok("gmail_search_empty.json"), httpx.Response(200, json=sent)])
+    result = run(stub)
+    assert result.status_code == 502 and "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 2  # the send is not repeated
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize("thread", ["18f0aaaa0000cccc", None])
+def test_earlier_send_found_in_another_thread_is_unknown_and_not_resent(
+    thread: str | None,
+) -> None:
+    found = fixture("gmail_search_found.json")
+    if thread is None:
+        del found["messages"][0]["threadId"]
+    else:
+        found["messages"][0]["threadId"] = thread
+    stub = Stub(reply_dispatch(), [httpx.Response(200, json=found)])
+    result = run(stub)
+    assert result.status_code == 502 and "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 1  # the search only: nothing is sent
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
 def test_send_without_a_message_id_in_the_answer_is_an_unknown_outcome() -> None:

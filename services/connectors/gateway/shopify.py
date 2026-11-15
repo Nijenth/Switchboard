@@ -67,6 +67,27 @@ def _graphql_data(body: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _no_effect(error: Any) -> bool:
+    """True only for a user error that names the input field it rejects.
+
+    Shopify documents refundCreate's userErrors as ``field`` and ``message``.
+    Its idempotency errors (request in progress, key reused with other
+    parameters) carry ``field: null`` and a ``code``; an earlier request with
+    the same key may have taken effect, so those never mean nothing happened.
+    A ``code`` is not requested and none is known to mean a plain validation
+    error, so any error that carries one is treated the same way.
+    """
+    if not isinstance(error, dict) or error.get("code") is not None:
+        return False
+    path = error.get("field")
+    return (
+        isinstance(path, list)
+        and bool(path)
+        and all(isinstance(part, str) and part for part in path)
+        and isinstance(error.get("message"), str)
+    )
+
+
 def _refund_effect(refund: dict[str, Any], *, reused: bool) -> Effect:
     try:
         external_ref = refund["id"]
@@ -189,6 +210,8 @@ async def issue_refund(
         if errors:
             if refund is not None:
                 raise UnknownOutcome("Shopify returned a refund record with user errors")
+            if not all(_no_effect(error) for error in errors):
+                raise UnknownOutcome("Shopify user error does not prove that nothing happened")
             raise Refused("Shopify rejected the refund input")
         return _refund_effect(refund, reused=False)
     except (KeyError, TypeError, ValueError):
