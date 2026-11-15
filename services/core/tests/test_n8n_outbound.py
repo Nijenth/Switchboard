@@ -10,11 +10,13 @@ import psycopg
 import pytest
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 from starlette.responses import Response
 from test_postgres import CASE_ID
 
 from app.adapters.db import Settings, create_pool
 from app.main import create_app
+from harness.console import console_for_stack
 from harness.live_stack import (
     MANAGER,
     MANAGER_SLACK,
@@ -424,6 +426,40 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 ).fetchall()
             assert [row[:3] for row in live_reply] == [("auto", "ORDER_STATUS", "sent")]
             assert "NW-1002" in live_reply[0][3] and "USPS" in live_reply[0][3]
+            # The browser console drives the same stack: free text waits for a reviewer.
+            app_console = console_for_stack(
+                stack,
+                os.environ["SWITCHBOARD_CORE_TEST_CONTAINER"],
+                os.environ["SWITCHBOARD_CORE_TEST_MARKER"],
+            )
+            browser = TestClient(app_console, base_url="http://127.0.0.1:8780")
+            browser.headers["X-Console-Token"] = app_console.state.console.token
+            sent = browser.post(
+                "/api/send",
+                json={"sender": "liam.chen@example.com", "text": "Do you sell gift cards?"},
+            )
+            assert sent.status_code == 200, sent.text
+            (console_case,) = sent.json()["cases"]
+            (console_review,) = sent.json()["reviews"]
+            assert console_case["badges"] == ["Waiting for review"]
+            assert console_case["reply_status"] != "sent"
+            assert console_review["case_id"] == console_case["case_id"]
+            # The timeline comes from the reporting login and carries redacted text only.
+            messages = [
+                row["body_redacted"]
+                for row in console_case["timeline"]
+                if row["event_kind"] == "message"
+            ]
+            assert messages == ["Do you sell gift cards?"]
+            decided = browser.post(
+                f"/api/reviews/{console_review['id']}", json={"decision": "approve"}
+            )
+            assert decided.status_code == 200, decided.text
+            (console_case,) = decided.json()["cases"]
+            assert decided.json()["reviews"] == []
+            assert console_case["badges"] == ["Reply sent after review"]
+            assert console_case["reply_status"] == "sent"
+            print("Console | free text | review approved by fixture admin | reply sent")
             print(f"NW-1002 | live message | ORDER_STATUS: auto | draft sent\n{live_reply[0][3]}")
 
     with create_pool(config) as pool, pool.connection() as conn, conn.transaction():

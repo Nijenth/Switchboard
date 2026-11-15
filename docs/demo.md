@@ -61,6 +61,33 @@ message that is not in the recorded fixture ("Where is my order NW-1002?")
 and prints its decision and reply. See the
 [runbook](runbook.md#live-demo-stack-adr-0030) for failures.
 
+### Present it live in a browser
+
+```bash
+bash scripts/demo_live up --console
+```
+
+Open `http://127.0.0.1:8780` on the same machine once the terminal prints
+"Demo console". The page has three columns.
+
+1. **Send a customer email.** Six buttons send the scripted messages from this
+   walkthrough. The form sends your own text as one of the seeded customers or
+   as someone with no orders.
+2. **What the system did.** One card per message with outcome badges, the
+   draft (marked "not sent" unless it was sent) and the recorded evidence.
+3. **You are the reviewer.** Approve or reject each waiting review. Your click
+   is signed as the seeded staff member for the role the policy requires.
+
+Each step runs real n8n workflows, so allow up to a minute for a send and
+about twenty seconds for a decision. Start from a fresh `up` for each
+audience: order NW-1003 can only be refunded once per database.
+
+Say this out loud: the model is a deterministic stand-in. It recognises the
+scripted messages and "where … NW-number" questions. Any other text is
+classified as `other`, gets a draft from the first matching knowledge
+snippet, and waits for a reviewer. That shows the review gate, not model
+quality. Design and limits: [ADR 0031](adr/0031-live-demo-console.md).
+
 The automated run is the repeatable send path. Read the messages aloud as you
 show the evidence indicated below. The receipt and audit checks use generated
 IDs, so use the order numbers and event names to connect each scene.

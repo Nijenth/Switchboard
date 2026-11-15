@@ -243,9 +243,13 @@ class SlackFixture:
 
 
 @contextmanager
-def serve(app: FastAPI) -> Iterator[str]:
+def serve(app: FastAPI, port: int = 0) -> Iterator[str]:
+    """Serve on loopback only. Port 0 picks a free port."""
     with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            raise StackError(f"Port {port} on 127.0.0.1 is already in use") from None
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))
         thread = Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
         thread.start()

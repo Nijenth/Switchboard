@@ -60,6 +60,16 @@ the resulting decision. It uses the fake model and mock adapters only.
 | A live message is rejected with 401 after many hours | The ingress credential lasts 12 hours. Run `down`, then `up`. |
 | An approved action is cancelled before dispatch | The tenant claim window (60 minutes by default) passed. This is the ADR 0026 exit. Send the message again. |
 
+Console (`up --console`, ADR 0031):
+
+| Symptom | What to do |
+|---|---|
+| "Port 8780 on 127.0.0.1 is already in use" | Another program holds the port. Stop it and run `up --console` again. The failed start cleans up after itself. |
+| The page says "Another step is still running" | One stack step runs at a time. Wait for the status line to say "Done." |
+| The page says "A stack step failed" with HTTP statuses and node names | An n8n run failed. The message lists status codes and node names only. Retry once; if it repeats, run `bash scripts/test_core.sh --offline-n8n` to check the stack itself. |
+| "Missing console token" after a restart | The token changes on every `up`. Reload the page. |
+| "That review is no longer waiting" | It was already decided or it expired. Reload to see the current list. |
+
 `.demo-live/state.json` holds container and volume names and a heartbeat. It
 holds no credential. `down` only removes resources whose names match the
 harness's own naming patterns.
