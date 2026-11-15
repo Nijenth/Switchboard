@@ -1,0 +1,122 @@
+# Review queue
+
+Work built ahead by Claude (Fable) on stacked branches. Nothing here is merged
+or pushed. Review and merge the slices **in order**; each branch is created
+from the one before it.
+
+Evidence labels: **observed** = I ran it and saw the result on this machine.
+**inferred** = follows from the code, not run. **unverified** = not checked.
+A local pass is not a hosted CI pass, and the builder's report is not an
+independent review.
+
+How to run the standard checks (Bash, Python 3.12 virtualenv active, Docker
+Desktop running, pinned images cached as in `docs/demo.md`):
+
+```bash
+python scripts/scan_secrets.py
+(cd services/core && python -m ruff check . && python -m ruff format --check . && python -m mypy app harness)
+python scripts/load_packs --check
+(source scripts/test_db_env.sh; docker compose --env-file .env.example --profile test run --pull never --rm --no-deps db-check)
+bash scripts/test_core.sh
+bash scripts/test_core.sh --offline-ai
+bash scripts/test_core.sh --offline-n8n
+```
+
+## Note on the briefs
+
+The slice A and B briefs were not in the repository. Slice A was built from
+the summary of the live-input brief saved in the planning notes on 2026-11-15
+(design note first; extract the harness from `test_n8n_outbound.py`; core
+in-process via uvicorn; n8n as one-shot CLI calls; `scripts/demo_live
+up|down`). If the full brief asks for more, that part is not built.
+
+---
+
+## Slice 1 — live demo stack (slice A)
+
+- **Branch:** `build/01-live-stack` (from `main` at `1a22d19`)
+- **Commit:** see `git log -1 build/01-live-stack`
+- **Baseline before the change (observed):** `test_core.sh --offline-n8n` on
+  `main`: 165 passed.
+
+### What it does
+
+- `docs/adr/0030-live-demo-stack.md`: the design note, including the exit for
+  every new live state.
+- `services/core/harness/` (new package beside `app`, never imported by it):
+  - `live_stack.py`: the stack assembly that used to be the body of
+    `test_n8n_outbound.py` (fresh scoped credentials, tenant fixture setup,
+    local Slack fixture, core on a loopback port, checkpoint process, scratch
+    n8n volume, one-shot n8n CLI runs, signed reviewer click). New:
+    `send_email`, which pushes one new message through `wf_ingest_email`.
+  - `demo_live.py`: `up [--smoke]`, `down`, `status`.
+  - `checkpoint_child.py`: makes the checkpoint fixture exit when its parent dies.
+- `scripts/core_stack.sh`: the database and gateway bring-up moved out of
+  `scripts/test_core.sh` unchanged, so `test_core.sh` and `demo_live` share it.
+- `scripts/demo_live`: the wrapper command.
+- `tests/test_n8n_outbound.py` now builds its stack through the package. Every
+  earlier assertion and both lost-completion fault injections are kept. One
+  assertion block is new: a message that is not in the imported fixture
+  (NW-1002) produces an automatic, sent, order-status reply.
+- `tests/test_postgres.py` imports `NORTHWIND`, `set_northwind` and
+  `verify_cluster` from the package instead of defining its own copies.
+- CI: the Python job now runs `mypy app harness`.
+- No migration, table, tool, dependency or workflow export changed. No file
+  under `services/core/app` changed.
+
+### How to test it
+
+1. Run the standard checks above.
+2. Live path:
+   ```bash
+   bash scripts/demo_live up --smoke     # terminal 1; wait for "Live demo stack ready"
+   bash scripts/demo_live status         # terminal 2: "running | core http://127.0.0.1:…"
+   bash scripts/demo_live up             # terminal 2: refused, exit 1
+   bash scripts/demo_live down           # terminal 2: terminal 1 exits by itself
+   docker ps -a --format '{{.Names}}' | grep core-check     # nothing
+   docker volume ls -q | grep switchboard-n8n-test          # nothing
+   ```
+   Expected smoke output: `Smoke: NW-1002 | ORDER_STATUS: auto | draft sent`
+   and a reply naming USPS.
+3. Crash path: start `up`, close its terminal (or kill its `bash` and `python`
+   processes), wait 20 seconds, then `status` prints `stale` and `down` removes
+   the containers, networks, volume and state file.
+
+### Verified (observed, on this Windows machine, final revision of the code)
+
+| Check | Result |
+|---|---|
+| `scan_secrets.py` | 0 findings |
+| `ruff check .` / `ruff format --check .` (services/core) | passed / 43 files formatted |
+| `mypy app harness` | no issues, 31 files |
+| `load_packs --check` | validated ecommerce_support ×3, invoice_processing, sales_leads |
+| `db-check` (SQL) | exit 0; 301 PASS lines, 0 FAIL lines |
+| `test_core.sh` | 147 passed, 18 skipped |
+| `test_core.sh --offline-ai` | 164 passed, 1 skipped |
+| `test_core.sh --offline-n8n` | 165 passed, 0 skipped |
+| `demo_live up --smoke`, `status`, second `up`, `down` | behaved as in "How to test it"; no containers, volume or state left |
+| Hard kill, then `down` | stale detected; containers, networks, volume and state removed; no checkpoint process left |
+
+The first hard-kill test found one real defect: the checkpoint fixture process
+survived its parent. `checkpoint_child.py` fixes it and the test was repeated.
+
+### Not verified
+
+- **Hosted CI:** unverified. Nothing was pushed. The `mypy app harness` CI
+  change has only run locally.
+- **Linux/macOS:** unverified. `demo_live` was only run under Git Bash on
+  Windows. The n8n harness has always required Docker Desktop's
+  `desktop-linux` context; that is unchanged.
+- **Ctrl+C in the `up` terminal:** inferred from the `KeyboardInterrupt`
+  handler and the shell traps. Only `down` and a hard kill were exercised.
+- **Temporary folder removal after a crash:** inferred. The crash tests ran
+  before that clean-up line was added; the full check suite ran after it.
+- **12-hour ingress credential expiry:** inferred from the SQL. Not waited out.
+- **PowerShell runner (`scripts/test_core.ps1`):** not changed and not run.
+- **Independent review:** none yet. I wrote and tested this slice myself.
+
+### Owner must do
+
+- Paste the full slice A and B briefs if they differ from the summary above.
+- Ask Codex for the independent review of this branch before merging.
+- Push the branch and confirm hosted CI.

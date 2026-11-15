@@ -45,6 +45,25 @@ scene mismatch means its badge is unsupported by the recorded evidence.
 Check the named scene and rerun the harness to capture a fresh recording.
 [Demo commands](demo.md#generate-the-offline-replay)
 
+## Live demo stack (ADR 0030)
+
+`bash scripts/demo_live up` builds a fresh disposable database, the offline AI
+gateway, core on a loopback port and a scratch n8n, then holds them in that
+terminal. Add `--smoke` to send one new order-status message first and print
+the resulting decision. It uses the fake model and mock adapters only.
+
+| Symptom | What to do |
+|---|---|
+| "already running" | Stop the other one with `bash scripts/demo_live down`. |
+| "did not shut down cleanly", or `status` prints `stale` | The terminal was closed or the process was killed. `bash scripts/demo_live down` removes the recorded database container, gateway project, n8n volume and temporary folder. |
+| `up` fails while starting | Its cleanup trap removes the containers it created. Run `down` once to clear any state file, then check that the pinned images are cached (see [demo setup](demo.md#setup-and-run)). |
+| A live message is rejected with 401 after many hours | The ingress credential lasts 12 hours. Run `down`, then `up`. |
+| An approved action is cancelled before dispatch | The tenant claim window (60 minutes by default) passed. This is the ADR 0026 exit. Send the message again. |
+
+`.demo-live/state.json` holds container and volume names and a heartbeat. It
+holds no credential. `down` only removes resources whose names match the
+harness's own naming patterns.
+
 ## Pack lookups and identity (ADRs 0019, 0021, 0022, 0023)
 
 Set `SWITCHBOARD_LOOKUP_CREDENTIALS` to a JSON list of tenant IDs and tokens. After

@@ -22,8 +22,8 @@ from psycopg import Connection
 from app.adapters.db import Settings, create_pool
 from app.api.drafts import DraftInput, lookup_evidence
 from app.main import create_app
+from harness.live_stack import NORTHWIND, set_northwind, verify_cluster
 
-NORTHWIND = UUID("10000000-0000-0000-0000-000000000001")
 ACME = UUID("91000000-0000-0000-0000-000000000001")
 INVOICES = "invoices@northwind.example"
 SUPPORT = "support@northwind.example"
@@ -37,13 +37,6 @@ def settings() -> Settings:
     config = Settings.from_environment()
     assert config.db_host == "127.0.0.1" and config.db_name == "switchboard_test"
     return config
-
-
-def verify_cluster(connection: Connection[tuple[object, ...]], login: str) -> None:
-    result = connection.execute(
-        "SELECT current_setting('switchboard.integration_marker', true), session_user, current_user"
-    ).fetchone()
-    assert result == (environ["SWITCHBOARD_CORE_TEST_MARKER"], login, login)
 
 
 @pytest.fixture(scope="module")
@@ -920,11 +913,6 @@ def test_core_pool_reuses_connection_after_commit_and_rollback(settings: Setting
 
 CASE_ID = UUID("92000000-0000-0000-0000-000000000001")
 FINANCE = UUID("20000000-0000-0000-0000-000000000003")
-
-
-def set_northwind(connection: Connection[tuple[object, ...]]) -> None:
-    verify_cluster(connection, "switchboard_core")
-    connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(NORTHWIND),))
 
 
 def pending_request(connection: Connection[tuple[object, ...]]) -> UUID:

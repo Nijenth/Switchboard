@@ -23,7 +23,7 @@ jobs:
       - run: |
           python -m ruff check .
           python -m ruff format --check .
-          python -m mypy app
+          python -m mypy app harness
           python -m pytest -q --cov=app.engine --cov-report=term-missing --cov-fail-under=90 tests/test_health.py tests/test_ingest.py tests/test_audit_checkpoint.py tests/test_guardrails.py tests/test_policy.py tests/test_eval_runner.py tests/test_understanding.py tests/test_drafting.py
         working-directory: services/core
 
