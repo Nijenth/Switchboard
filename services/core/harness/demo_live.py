@@ -23,6 +23,7 @@ from time import monotonic, sleep, time
 from uuid import uuid4
 
 from app.adapters.db import Settings, create_pool
+from harness.console import console_for_stack
 from harness.live_stack import (
     DOCKER,
     NORTHWIND,
@@ -30,6 +31,7 @@ from harness.live_stack import (
     LiveStack,
     StackError,
     launch,
+    serve,
     set_northwind,
 )
 
@@ -38,6 +40,7 @@ STALE_AFTER_SECONDS = 20
 # How long a claimed stack may take to start before it counts as abandoned.
 STARTUP_GRACE_SECONDS = 300
 INGRESS_TTL_MINUTES = 12 * 60
+CONSOLE_PORT = 8780
 WORKDIR_PREFIX = "switchboard-live-"
 # Names from the state file are data. Only remove resources this harness names.
 CONTAINER_NAME = re.compile(r"switchboard-core-check-[0-9a-f]{24}")
@@ -164,7 +167,7 @@ def hold(state: State) -> None:
     print("Stop requested. Shutting down.", flush=True)
 
 
-def up(run_smoke: bool) -> int:
+def up(run_smoke: bool, run_console: bool = False) -> int:
     state = read_state()
     container, volume, workdir = owned_names(state or {})
     if (
@@ -190,7 +193,17 @@ def up(run_smoke: bool) -> int:
                 "Mock adapters and the fake model only. Stop with Ctrl+C or: scripts/demo_live down",
                 flush=True,
             )
-            hold(state)
+            if run_console:
+                console = console_for_stack(
+                    stack,
+                    os.environ["SWITCHBOARD_CORE_TEST_CONTAINER"],
+                    os.environ["SWITCHBOARD_CORE_TEST_MARKER"],
+                )
+                with serve(console, CONSOLE_PORT) as url:
+                    print(f"Demo console: open {url} in a browser on this machine.", flush=True)
+                    hold(state)
+            else:
+                hold(state)
     except KeyboardInterrupt:
         print("Interrupted. Shutting down.", flush=True)
     finally:
@@ -338,17 +351,15 @@ def main(arguments: list[str]) -> int:
     match arguments:
         case ["claim"]:
             return claim()
-        case ["up"]:
-            return up(run_smoke=False)
-        case ["up", "--smoke"]:
-            return up(run_smoke=True)
+        case ["up", *flags] if set(flags) <= {"--smoke", "--console"}:
+            return up(run_smoke="--smoke" in flags, run_console="--console" in flags)
         case ["release"]:
             return release()
         case ["down"]:
             return down()
         case ["status"]:
             return status()
-    print("Usage: scripts/demo_live up [--smoke] | down | status", file=sys.stderr)
+    print("Usage: scripts/demo_live up [--smoke] [--console] | down | status", file=sys.stderr)
     return 2
 
 

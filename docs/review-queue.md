@@ -135,3 +135,88 @@ The previous builder reported SQL 301 PASS / 0 FAIL, core plain 157 passed /
 are reported-by-builder results. This continuation independently observed
 the same harness unit tests pass on the descendant Branch 02. Hosted CI
 remains unverified. The CI-only follow-up changes no runtime code.
+---
+
+## Slice 2 — live demo console (slice B)
+
+- **Branch:** `build/02-live-console` (from `build/01-live-stack`)
+- **Commit:** see `git log -1 build/02-live-console`
+
+### What it does
+
+- `docs/adr/0031-live-demo-console.md`: design, browser-facing protections,
+  exits for each new live state, and one deviation from the brief (below).
+- `services/core/harness/console.py` and `console_page.py`: a browser console
+  served by `scripts/demo_live up --console` at `http://127.0.0.1:8780`.
+  Six scripted messages, a free-text form, a case feed with evidence, and a
+  reviewer panel with Approve and Reject.
+- Sends go through `wf_ingest_email` and the Slack-posting and dispatch
+  workflows. Decisions go through core's existing signed `/approvals/slack`.
+  The display reads the replay's reporting-login timeline reader.
+- `tests/test_console.py`: 20 unit tests with a fake backend (token, foreign
+  host name, input validation, one step at a time, failure handling, reviewer
+  per role, badges from evidence only).
+- `tests/test_n8n_outbound.py`: one more block. Through the console, free
+  text waits for review, the fixture admin approves it, and the reply is sent.
+- CI: `tests/test_console.py` added to the Python job's unit test list.
+- No file under `services/core/app`, no migration, tool, pack, workflow export
+  or dependency changed.
+
+### Deviations from the brief summary
+
+- **"Separate process":** the console is a separate app on a separate port
+  inside the `demo_live up` process, not a separate OS process. ADR 0031 gives
+  the reason. Say if you want a real process boundary.
+- **Keyword stand-in classifier:** not built (the brief made it optional).
+
+### How to test it
+
+1. Run the standard checks at the top of this file.
+2. `bash scripts/demo_live up --console`, wait for "Demo console", open
+   `http://127.0.0.1:8780`.
+3. Click "Customer asks for a refund (you decide)". After up to a minute the
+   reviewer column shows two reviews: the reply draft (role agent) and
+   `order_refund_issue · EUR 210.00` (role manager). Approve the refund: the
+   card gains "Mock refund paid after approval". Reject the reply draft.
+4. Click "Email that tries to take control": badge "Escalated to a person",
+   nothing to review, draft marked not sent.
+5. Send free text as Liam Chen ("Do you sell gift cards?"): "Waiting for
+   review". Approve it: "Reply sent after review".
+6. `bash scripts/demo_live down` from another terminal.
+
+### Verified (observed, this Windows machine)
+
+| Check | Result |
+|---|---|
+| `scan_secrets.py` | 0 findings |
+| `ruff check .` / `ruff format --check .` | passed / 46 files formatted |
+| `mypy app harness` | no issues, 33 files |
+| `load_packs --check` | passed |
+| `db-check` (SQL) | exit 0; 301 PASS lines, 0 FAIL lines |
+| `test_core.sh` | 167 passed, 18 skipped |
+| `test_core.sh --offline-ai` | 184 passed, 1 skipped |
+| `test_core.sh --offline-n8n` | 185 passed, 0 skipped |
+| Browser run of steps 3 to 5 above | Each outcome appeared as described. `down` then stopped the stack. |
+
+### Not verified
+
+- **Two labels in the page after the browser run:** the browser run used the
+  build before I changed the draft caption ("Reply sent (mock outbound)" /
+  "Draft, not sent (status: …)") and the wait-time wording. The data behind
+  the caption (`reply_status`) is covered by the unit and n8n tests; the
+  caption's rendering in the page is **inferred**.
+- **The other three scripted buttons** (verified order status, unknown
+  sender, expired, already refunded) were not clicked in the browser. Their
+  messages are the ones the n8n test already sends; the console path for them
+  is inferred.
+- **Narrow-screen layout, keyboard-only use, screen readers:** unverified.
+- **Port 8780 already in use:** inferred from the code, not exercised.
+- **Hosted CI, Linux/macOS, independent review:** as for slice 1.
+- **Observed limit worth knowing before presenting:** the stand-in draft model
+  answered "Do you sell gift cards?" with the returns policy. That is the
+  fixture's behaviour and the reason the reply waits for a reviewer.
+
+### Owner must do
+
+- Rehearse the console once before showing it to anyone.
+- Ask Codex for the independent review of this branch.

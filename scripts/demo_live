@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Live demo stack on a disposable database with mock adapters and the fake model (ADR 0030).
-#   scripts/demo_live up [--smoke]   start and hold the stack in this terminal
+#   scripts/demo_live up [--smoke] [--console]
+#                                    start and hold the stack in this terminal;
+#                                    --console also serves the browser console
 #   scripts/demo_live down           stop it from another terminal, or clean up after a crash
 #   scripts/demo_live status
 set -euo pipefail
@@ -18,14 +20,14 @@ harness() (
     "$python" -m harness.demo_live "$@"
 )
 usage() {
-    printf 'Usage: scripts/demo_live up [--smoke] | down | status\n' >&2
+    printf 'Usage: scripts/demo_live up [--smoke] [--console] | down | status\n' >&2
     exit 2
 }
 
 case "${1:-}" in
     up)
         for flag in "${@:2}"; do
-            [[ $flag == --smoke ]] || usage
+            [[ $flag == --smoke || $flag == --console ]] || usage
         done
         # Ownership first: nothing is created unless this run holds the state file,
         # and the state file already names everything this run will create.
