@@ -32,6 +32,23 @@ the manual Gmail-shaped input, and submits the signed review interaction.
 It finishes with the v3 eval report and cleans up its disposable resources.
 Run the same command again to reset the mock payout and the audit history.
 
+## Generate the offline replay
+
+Set `SWITCHBOARD_DEMO_REPORT` to an output path before starting the demo.
+Use an absolute path so the test can write it from `services/core`.
+
+```bash
+SWITCHBOARD_DEMO_REPORT="$PWD/demo-report.html" \
+  PYTEST_ADDOPTS="-s -k test_n8n_mock_outbound_loop" \
+  bash scripts/test_core.sh --offline-n8n
+```
+
+Open `demo-report.html` directly in your browser. Use **Next**, **Back**, or the
+left and right arrow keys. Expand **Technical evidence** for the timeline.
+The replay includes seven scenes, plus a title and a claims screen. It uses
+the recorded mock run and works offline. The script exports before removing
+the disposable database. The default filename is ignored by Git.
+
 The automated run is the repeatable send path. Read the messages aloud as you
 show the evidence indicated below. The receipt and audit checks use generated
 IDs, so use the order numbers and event names to connect each scene.

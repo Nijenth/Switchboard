@@ -1,0 +1,465 @@
+#!/usr/bin/env python3
+"""Export the disposable Pack 1 run as a standalone HTML replay."""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from html import escape
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+FIELDS = {
+    "message": ("body_redacted",),
+    "classification": ("intent", "confidence", "flags"),
+    "lookup": ("tool_key", "status", "result_reason"),
+    "policy_decision": ("rule_id", "rule_source", "decision"),
+    "draft": ("status", "draft_body"),
+    "action": ("tool_key", "risk_level", "status", "amount", "currency"),
+    "approval": ("required_role", "decision"),
+    "audit": ("audit_event", "audit_sequence"),
+}
+
+
+@dataclass(frozen=True)
+class Scene:
+    key: str
+    headline: str
+    badge: str
+    why: str
+    proof: str
+    limit: str
+    rule: str | None = None
+
+
+# Narration follows docs/demo.md. Only the recorded fixture IDs vary by run.
+SCENES = (
+    Scene(
+        "verified",
+        "A verified customer gets an instant, grounded answer",
+        "Auto-replied",
+        "The sender matched the order. The reply used the verified shipment lookup.",
+        "The verified, grounded reply can run without a review in the mock stack.",
+        "The fixture matches the seeded sender and order. Real inbox ownership and email delivery "
+        "need separate verification.",
+        "ORDER_STATUS",
+    ),
+    Scene(
+        "unknown",
+        "The same order number reveals nothing to an unknown sender",
+        "Blocked",
+        "The sender did not match the order, so the tracking lookup and refund eligibility "
+        "were withheld.",
+        "An order number alone grants no access to restricted lookup data.",
+        "This is one credential and order pairing in the mock stack.",
+    ),
+    Scene(
+        "refund",
+        "A manager has the final say on a refund",
+        "Refunded after approval",
+        "The request waited for a manager. The signed approval released the mock payout.",
+        "A signed manager decision authorizes a mock payout. The worker recovered a lost completion "
+        "from the existing receipt.",
+        "The payout and Slack interaction use local fixtures.",
+        "G3",
+    ),
+    Scene(
+        "expired",
+        "An expired refund window stops the payout",
+        "Blocked",
+        "The delivery date fell outside the refund window, so no payout action was created.",
+        "The mock refund rule uses the seeded delivery age.",
+        "Carrier timestamps and returns exceptions are outside this fixture.",
+        "window_expired",
+    ),
+    Scene(
+        "refunded",
+        "A second refund request stops at the eligibility check",
+        "Blocked",
+        "The shop already showed the order as refunded, so no new payout was created.",
+        "The mock shop's refunded state blocks the repeat request.",
+        "Provider-side idempotency depends on the real integration.",
+        "already_refunded",
+    ),
+    Scene(
+        "injection",
+        "An email that tries to take control is escalated",
+        "Escalated",
+        "The inbound guardrail recognized an attempt to override instructions and escalated the case.",
+        "This pattern triggers real policy escalation before payout or send.",
+        "The fixture covers this pattern. Real-model robustness and broader attack coverage need "
+        "separate evaluation.",
+        "G1",
+    ),
+    Scene(
+        "refund",
+        "The audit trail verifies against a saved checkpoint",
+        "Verified",
+        "The verifier checked the chain against the prior independently stored checkpoint.",
+        "The chain verifies against the saved checkpoint for this stack.",
+        "Production assurance depends on custody of checkpoint storage and its credentials. "
+        "This run uses local fixture storage.",
+        "verify_audit_checkpoint",
+    ),
+)
+CASE_KEYS = {scene.key for scene in SCENES}
+
+
+def safe(value: object) -> str:
+    """Escape recorded values and suppress email-like text even in draft bodies."""
+    return escape(EMAIL.sub("[EMAIL]", str(value)), quote=True)
+
+
+def evidence(rows: list[dict[str, object]]) -> str:
+    items = []
+    for row in rows:
+        kind = str(row["event_kind"])
+        fields = " · ".join(
+            f"{field.replace('_', ' ')} <b>{safe(row[field])}</b>"
+            for field in FIELDS[kind]
+            if row.get(field) not in (None, [], "")
+        )
+        items.append(
+            f"<li><time>{safe(row['created_at'])}</time><div>"
+            f"<strong>{safe(kind.replace('_', ' '))}</strong> {fields}</div></li>"
+        )
+    return f"<details><summary>Technical evidence</summary><ol>{''.join(items)}</ol></details>"
+
+
+def validate_recording(
+    cases: Mapping[str, list[dict[str, object]]], checkpoint: tuple[int, int]
+) -> None:
+    """Check the evidence for the demo claims before rendering the page."""
+
+    def has(scene: str, **fields: object) -> bool:
+        return any(
+            all(row.get(key) == value for key, value in fields.items()) for row in cases[scene]
+        )
+
+    if cases.keys() != CASE_KEYS:
+        raise ValueError("Recording must contain all six demo cases")
+    for scene, rows in cases.items():
+        messages = [row.get("body_redacted") for row in rows if row.get("event_kind") == "message"]
+        if len(messages) != 1 or not isinstance(messages[0], str) or not messages[0].strip():
+            raise ValueError(f"Scene '{scene}' must have exactly one redacted customer message")
+
+    checks = (
+        (
+            "verified",
+            has("verified", event_kind="policy_decision", rule_id="ORDER_STATUS", decision="auto")
+            and has("verified", event_kind="draft", status="sent"),
+            "ORDER_STATUS auto and a sent draft",
+        ),
+        (
+            "unknown",
+            has(
+                "unknown",
+                event_kind="lookup",
+                tool_key="order_identity_check",
+                result_reason="identity_unverified",
+            )
+            and not has("unknown", tool_key="order_lookup"),
+            "an unverified identity result and no order lookup",
+        ),
+        (
+            "refund",
+            has("refund", event_kind="approval", required_role="manager", decision="pending")
+            and has("refund", event_kind="approval", required_role="manager", decision="approved")
+            and has(
+                "refund",
+                event_kind="action",
+                risk_level="money",
+                status="executed",
+                amount=210,
+                currency="EUR",
+            ),
+            "a manager approval request and decision, and an executed 210 EUR money action",
+        ),
+        (
+            "expired",
+            has(
+                "expired",
+                event_kind="lookup",
+                tool_key="order_refund_eligibility",
+                result_reason="window_expired",
+            )
+            and not has("expired", event_kind="action", risk_level="money"),
+            "a window_expired eligibility result and no money action",
+        ),
+        (
+            "refunded",
+            has(
+                "refunded",
+                event_kind="lookup",
+                tool_key="order_refund_eligibility",
+                result_reason="already_refunded",
+            )
+            and not has("refunded", event_kind="action", risk_level="money"),
+            "an already_refunded eligibility result and no money action",
+        ),
+        (
+            "injection",
+            has("injection", event_kind="policy_decision", rule_id="G1", decision="escalate")
+            and not has("injection", event_kind="action"),
+            "G1 escalate and no action rows",
+        ),
+        ("audit", 0 <= checkpoint[0] < checkpoint[1], "an advanced verified audit checkpoint"),
+    )
+    for scene, matches, expected in checks:
+        if not matches:
+            raise ValueError(f"Scene '{scene}' does not match the recording. Expected {expected}.")
+
+
+def render_report(
+    recorded_at: str,
+    cases: Mapping[str, list[dict[str, object]]],
+    checkpoint: tuple[int, int],
+) -> str:
+    validate_recording(cases, checkpoint)
+    screens = [
+        f"""
+        <section class="screen cover">
+          <p class="eyebrow">Switchboard / Pack 1</p>
+          <h1 tabindex="-1">How Switchboard handles customer support</h1>
+          <p class="pitch">Follow a fictional apparel retailer as it answers order questions,
+          protects customer details, and routes refunds to a manager. Seven scenes show where
+          automation acts, where it stops, and how each decision can be traced.</p>
+          <p class="replay">Recorded run of the mock stack on {safe(recorded_at)}.
+          Fake AI model, mock shop, no real money or email.</p>
+        </section>
+    """
+    ]
+    for index, scene in enumerate(SCENES, 1):
+        rows = cases[scene.key]
+        (message,) = (row["body_redacted"] for row in rows if row["event_kind"] == "message")
+        rules = [row["rule_id"] for row in rows if row["event_kind"] == "policy_decision"]
+        rule = scene.rule or (rules[-1] if rules else "Identity check")
+        milestone = ""
+        if index == len(SCENES):
+            milestone = (
+                f'<p class="replay">Verified checkpoint sequence '
+                f"{safe(checkpoint[0])} → {safe(checkpoint[1])}</p>"
+            )
+        badge = (
+            '<span class="badge waiting">Waiting for manager</span>'
+            if scene.badge == "Refunded after approval"
+            else ""
+        )
+        screens.append(f"""
+        <section class="screen" hidden>
+          <p class="eyebrow">Scene {index} / {len(SCENES)}</p>
+          <h2 tabindex="-1">{escape(scene.headline)}</h2>
+          <div class="scene-grid">
+            <div>
+              <p class="label">Customer message</p>
+              <blockquote>{safe(message)}</blockquote>
+              <div class="badges">{badge}<span class="badge">{escape(scene.badge)}</span></div>
+              {milestone}
+              <h3>Why</h3><p>{escape(scene.why)}</p>
+              <small>{safe(rule)}</small>
+            </div>
+            <aside>
+              <h3>What this proves</h3><p>{escape(scene.proof)}</p>
+              <h3>Limit</h3><p>{escape(scene.limit)}</p>
+            </aside>
+          </div>
+          {evidence(rows)}
+        </section>
+        """)
+    screens.append("""
+        <section class="screen cover" hidden>
+          <h2 tabindex="-1">Claims we can make / cannot make yet</h2>
+          <div class="scene-grid">
+            <div><h3>We can show</h3><p>Order-scoped identity checks, an automatic grounded reply,
+            reviewed mock refunds, and an audit checkpoint. The offline report measures decisions
+            and safety gates under fixture inputs.</p></div>
+            <aside><h3>Still to verify</h3><p>Real-model accuracy, Shopify, Gmail, real payouts, and
+            live Slack delivery. The fake model echoes expected intents, so its intent score
+            cannot measure real-model accuracy.</p></aside>
+          </div>
+        </section>
+    """)
+    return PAGE_START + "".join(screens) + PAGE_END
+
+
+PAGE_START = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Switchboard · Pack 1 replay</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171a17;
+    color: #f5f2e7; --muted: #c1c8b9; --accent: #dffa9b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1rem; }
+  main, nav { max-width: 64rem; margin: auto; }
+  .screen { padding: clamp(1.3rem, 5vw, 3.5rem); background: #222721;
+    border: 1px solid #515c4d; border-radius: 1.25rem; min-height: 65vh; }
+  .eyebrow, .label { color: var(--accent); text-transform: uppercase; letter-spacing: .11em;
+    font-size: .8rem; font-weight: 700; margin-top: 0; }
+  h1, h2 { font-family: Georgia, serif; font-weight: 400; line-height: 1.08;
+    margin: .4em 0 .6em; letter-spacing: -.035em; }
+  h1 { font-size: clamp(3rem, 8vw, 6.2rem); }
+  h2 { font-size: clamp(2.25rem, 5vw, 4.1rem); }
+  h3 { font-size: 1rem; margin-bottom: .3rem; }
+  p, blockquote, li { line-height: 1.6; overflow-wrap: anywhere; }
+  .pitch { max-width: 44rem; font-size: clamp(1.1rem, 2vw, 1.4rem); }
+  .replay, small, time { color: var(--muted); }
+  .replay { border-left: 2px solid var(--accent); padding-left: 1rem; }
+  .scene-grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 1.75rem; }
+  aside { align-self: start; padding: .5rem 1.25rem; border-left: 1px solid #697562; }
+  h3 + p { margin-top: 0; }
+  blockquote { margin: .5rem 0 1rem; background: #343e32; padding: 1rem 1.25rem;
+    border-radius: 1rem 1rem 1rem .2rem; white-space: pre-wrap; }
+  .badges { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+  .badge { background: var(--accent); color: #21291a; border-radius: 2rem;
+    padding: .4rem .8rem; font-size: .9rem; font-weight: 750; }
+  .waiting { background: #f3d5a4; }
+  details { margin-top: 1.75rem; border-top: 1px solid #697562; padding-top: .9rem; }
+  summary { cursor: pointer; }
+  ol { padding-left: 1.3rem; }
+  li { margin: .45rem 0; }
+  time { display: block; font-size: .8rem; }
+  nav { display: flex; justify-content: space-between; align-items: center; gap: .5rem;
+    padding: 1rem 0; }
+  button { background: var(--accent); color: #21291a; padding: .6rem 1.2rem; border: 0;
+    border-radius: .5rem; font: inherit; font-weight: 750; cursor: pointer; }
+  button:disabled { background: #414a3d; color: #d0d5ca; cursor: default; }
+  :focus-visible { outline: 2px solid #f3d5a4; outline-offset: 4px; }
+  @media (max-width: 44rem) { .scene-grid { grid-template-columns: 1fr; gap: .8rem; } }
+</style>
+</head>
+<body><main>
+"""
+PAGE_END = """
+</main>
+<nav aria-label="Replay navigation">
+  <button type="button" id="back" disabled>← Back</button>
+  <output id="position" aria-live="polite"></output>
+  <button type="button" id="next">Next →</button>
+</nav>
+<script>
+  const screens = Array.from(document.querySelectorAll(".screen"));
+  const back = document.getElementById("back");
+  const next = document.getElementById("next");
+  const position = document.getElementById("position");
+  let current = 0;
+  function show(index, focus = true) {
+    if (index < 0 || index >= screens.length) return;
+    screens[current].hidden = true;
+    current = index;
+    screens[current].hidden = false;
+    back.disabled = current === 0;
+    next.disabled = current === screens.length - 1;
+    position.textContent = (current + 1) + " / " + screens.length;
+    if (focus) {
+      screens[current].querySelector("h1, h2").focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    }
+  }
+  back.addEventListener("click", () => show(current - 1));
+  next.addEventListener("click", () => show(current + 1));
+  document.addEventListener("keydown", event => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      show(current + (event.key === "ArrowLeft" ? -1 : 1));
+    }
+  });
+  show(0, false);
+</script>
+</body></html>
+"""
+
+
+def read_timeline(container: str, marker: str, tenant: UUID, case_ids: set[UUID]) -> dict[str, Any]:
+    if not re.fullmatch(r"switchboard-core-check-[0-9a-f]{24}", container):
+        raise ValueError("Invalid disposable container name")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", marker):
+        raise ValueError("Missing or invalid disposable database marker")
+    ids = ", ".join(f"'{case_id}'" for case_id in sorted(case_ids))
+    sql = rf"""
+BEGIN READ ONLY;
+SET LOCAL TIME ZONE 'UTC';
+SELECT (session_user = 'switchboard_reporting' AND current_user = session_user
+        AND current_database() = 'switchboard_test'
+        AND current_setting('switchboard.integration_marker', true) = '{marker}') IS TRUE AS verified
+\gset
+\if :verified
+SELECT jsonb_build_object('recorded_at', now(), 'rows',
+         jsonb_agg(to_jsonb(t) ORDER BY created_at, audit_sequence, event_kind))
+  FROM public.demo_case_timeline t
+ WHERE tenant_id = '{tenant}' AND case_id IN ({ids});
+\endif
+ROLLBACK;
+"""
+    # Use the PostgreSQL client already shipped in the disposable test image.
+    command = """
+set -euo pipefail
+set -- /var/lib/postgresql/data/check.*/socket
+[[ $# == 1 && -d $1 ]]
+export SWITCHBOARD_DB_SOCKET="$1"
+source scripts/db_common.sh
+db_psql_as switchboard_reporting "$SWITCHBOARD_REPORTING_PASSWORD" switchboard_test -qAt
+"""
+    result = subprocess.run(
+        ["docker", "exec", "-i", container, "bash", "-c", command],
+        input=sql,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+    if result.returncode or not result.stdout.strip():
+        raise ValueError("Could not read the disposable timeline as switchboard_reporting")
+    recording: dict[str, Any] = json.loads(result.stdout)
+    return recording
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tenant", required=True, type=UUID)
+    parser.add_argument("--case", nargs=2, action="append", required=True, metavar=("SCENE", "ID"))
+    parser.add_argument(
+        "--checkpoint", type=int, required=True, nargs=2, metavar=("BEFORE", "AFTER")
+    )
+    parser.add_argument("--output", type=Path, default=Path("demo-report.html"))
+    args = parser.parse_args()
+    try:
+        ids = {key: UUID(value) for key, value in args.case}
+        if (
+            ids.keys() != CASE_KEYS
+            or len(args.case) != len(CASE_KEYS)
+            or len(set(ids.values())) != len(ids)
+        ):
+            raise ValueError("Supply one distinct case ID for each demo case")
+        before, after = args.checkpoint
+        recording = read_timeline(
+            os.environ.get("SWITCHBOARD_CORE_TEST_CONTAINER", ""),
+            os.environ.get("SWITCHBOARD_CORE_TEST_MARKER", ""),
+            args.tenant,
+            set(ids.values()),
+        )
+        by_case: dict[str, list[dict[str, object]]] = {key: [] for key in ids}
+        keys = {str(value): key for key, value in ids.items()}
+        for row in recording["rows"] or []:
+            by_case[keys[row["case_id"]]].append(row)
+        timestamp = datetime.fromisoformat(recording["recorded_at"]).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        args.output.write_text(render_report(timestamp, by_case, (before, after)), encoding="utf-8")
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+        parser.exit(1, f"Demo report failed: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

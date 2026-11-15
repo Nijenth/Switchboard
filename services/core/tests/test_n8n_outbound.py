@@ -51,6 +51,41 @@ DEMO_MESSAGES = (
 )
 
 
+def export_demo_report(config: Settings, target: str, before: int, after: int) -> None:
+    # Resolve the exact recorded fixtures in the existing tenant-scoped test session.
+    # The exporter gets only case IDs and then reads with the reporting login.
+    selectors = (
+        ("verified", "NW-1001", "emma.jones@example.com"),
+        ("unknown", "NW-1001", "random.person@example.com"),
+        ("refund", "NW-1003", "sofia.rossi@example.com"),
+        ("expired", "NW-1004", "arjun.mehta@example.com"),
+        ("refunded", "NW-1007", "emma.jones@example.com"),
+        ("injection", "NW-1003", "attacker@example.com"),
+    )
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "demo_report"),
+        "--tenant",
+        str(NORTHWIND),
+        "--checkpoint",
+        str(before),
+        str(after),
+        "--output",
+        str(Path(target).resolve()),
+    ]
+    with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
+        set_northwind(conn)
+        for scene, order, sender in selectors:
+            ((case_id,),) = conn.execute(
+                """SELECT DISTINCT case_id FROM public.messages
+                    WHERE tenant_id=%s AND direction='inbound' AND sender_address=%s
+                      AND %s = ANY(regexp_split_to_array(body_redacted, '[^A-Za-z0-9-]+'))""",
+                (NORTHWIND, sender, order),
+            ).fetchall()
+            command.extend(("--case", scene, str(case_id)))
+    subprocess.run(command, check=True, timeout=30)
+
+
 @contextmanager
 def serve(app: FastAPI) -> Iterator[str]:
     with socket.socket() as sock:
@@ -124,6 +159,7 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
     if os.environ.get("SWITCHBOARD_TEST_N8N") != "1":
         pytest.skip("run scripts/test_core.ps1 -WithN8n")
     base = Settings.from_environment()
+    report_path = os.environ.get("SWITCHBOARD_DEMO_REPORT")
     tokens = {role: token_hex(32) for role in ("worker", "reconciler", "approval_poster")}
     ingress, understand, retrieve, draft, decide, lookup, refund = (token_hex(32) for _ in range(7))
 
@@ -702,11 +738,15 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 print("NW-1004 | window_expired | no payout action")
                 print("NW-1007 | already_refunded | no payout action")
                 print("Prompt injection | G1: escalate | no outbound action")
+            if report_path and config.offline_gateway_url:
+                n8n("execute", "--id=SwitchboardAudit1")
             checkpoints = [
                 json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()
             ]
-            assert len(checkpoints) == 2
-            assert checkpoints[-1]["chain_seq"] > checkpoints[0]["chain_seq"]
+            assert len(checkpoints) == (3 if report_path and config.offline_gateway_url else 2)
+            before = checkpoints[-2]["chain_seq"]
+            after = checkpoints[-1]["chain_seq"]
+            assert after > before
             print(
                 f"Audit checkpoint verified | {checkpoints[0]['chain_seq']} to {checkpoints[-1]['chain_seq']}"
             )
@@ -745,3 +785,6 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             ).fetchall()
             assert len(refunds) == 1 and refunds[0][:4] == ("NW-1003", 210, "EUR", "refunded")
             print(f"NW-1003 | one mock payout receipt | {refunds[0][4]}")
+    if report_path:
+        assert config.offline_gateway_url
+        export_demo_report(config, report_path, before, after)

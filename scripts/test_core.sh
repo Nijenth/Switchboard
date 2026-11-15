@@ -26,6 +26,7 @@ fi
 export SWITCHBOARD_CORE_TEST_GATEWAY
 SWITCHBOARD_CORE_TEST_GATEWAY=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
 container="switchboard-core-check-$(openssl rand -hex 12)"
+export SWITCHBOARD_CORE_TEST_CONTAINER="$container"
 docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.core-test.yml \
     --profile test run --detach --no-deps --pull never --name "$container" \
     --publish '127.0.0.1::5432' db-check --core-integration >/dev/null
