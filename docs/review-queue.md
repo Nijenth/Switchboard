@@ -571,6 +571,13 @@ Every open gateway item that must be closed before real dispatch is enabled:
    access token with an OAuth refresh flow.
 9. **Read tools on real adapters (ADR 0032 item 6):** implement real adapter
    paths for read tools (`order_lookup`, `order_identity_check`, etc.).
+10. **Corrupt-encoding search answers (Codex review of `d652749`):** a 2xx
+    duplicate-search answer whose body fails to decode (for example corrupt gzip,
+    `httpx.DecodingError`) is treated as a transport failure: retried, then
+    returned as 422 Refused. Under the Write outcome rule it must be
+    UnknownOutcome (502), because the search did not rule out an earlier effect.
+    No write is attempted and `/complete` is not called, so the ledger is safe.
+    Fix in `providers.search` with a regression test before enabling real dispatch.
 
 ### Not verified — read this before trusting the adapters
 
