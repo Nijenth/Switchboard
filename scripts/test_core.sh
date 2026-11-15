@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+repo="$PWD"
 source scripts/test_db_env.sh
 unset SWITCHBOARD_OFFLINE_GATEWAY_URL
 offline=false
@@ -32,7 +33,9 @@ project="$container"
 ai_compose=(docker compose --env-file .env.example -p "$project" --profile offline-ai)
 cleanup() {
     if [[ $offline == true ]]; then
-        (cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && "${ai_compose[@]}" down) || true
+        if ! (cd -- "$repo" && "${ai_compose[@]}" down); then
+            printf 'Warning: cleanup failed for Docker Compose project %s. Containers may remain.\n' "$project" >&2
+        fi
     fi
     docker rm --force --volumes "$container" >/dev/null
 }
