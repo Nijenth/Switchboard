@@ -55,6 +55,7 @@ SUB_WORKFLOWS = (
     "SwitchboardCase1",
 )
 EXECUTION_ROLES = ("worker", "reconciler", "approval_poster")
+N8N_TIMEOUT_SECONDS = 100
 N8N_FAILURE_HINTS = (
     "paired item",
     "multiple matching items",
@@ -318,9 +319,12 @@ def checkpoint_process(
 
 
 def docker(*args: str) -> None:
-    result = subprocess.run(
-        [*DOCKER, *args], text=True, capture_output=True, timeout=80, check=False
-    )
+    try:
+        result = subprocess.run(
+            [*DOCKER, *args], text=True, capture_output=True, timeout=80, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise StackError(f"docker {args[0]} timed out after 80 seconds") from None
     if result.returncode != 0:
         raise StackError((result.stdout + result.stderr)[-4000:])
 
@@ -396,14 +400,20 @@ class LiveStack:
             args.extend(("-e", key))
         if name:
             args.extend(("--name", name))
-        result = subprocess.run(
-            [*DOCKER, *args, IMAGE, *command],
-            env={**os.environ, **self._n8n_env},
-            text=True,
-            capture_output=True,
-            timeout=100,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [*DOCKER, *args, IMAGE, *command],
+                env={**os.environ, **self._n8n_env},
+                text=True,
+                capture_output=True,
+                timeout=N8N_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # The exception carries the captured output, which can hold grants. Drop it.
+            raise StackError(
+                f"n8n {' '.join(command)} timed out after {N8N_TIMEOUT_SECONDS} seconds"
+            ) from None
         if (result.returncode != 0) == expect_failure:
             return
         output = result.stdout + result.stderr
@@ -541,6 +551,7 @@ def live_stack(
     workdir: Path,
     *,
     extra_messages: Sequence[EmailMessage] = (),
+    volume: str | None = None,
 ) -> Iterator[LiveStack]:
     """Serve ``app``, start the checkpoint process and import the workflows into scratch n8n.
 
@@ -559,7 +570,8 @@ def live_stack(
             history, core, config.audit_token, credentials.schedule
         ) as checkpoint_url,
     ):
-        volume = "switchboard-n8n-test-" + uuid4().hex
+        # A caller that must record the name before the volume exists passes it in.
+        volume = volume or "switchboard-n8n-test-" + uuid4().hex
         stack = LiveStack(
             config=config,
             credentials=credentials,
@@ -599,7 +611,9 @@ def live_stack(
 
 
 @contextmanager
-def launch(base: Settings, workdir: Path, *, ingress_ttl_minutes: int) -> Iterator[LiveStack]:
+def launch(
+    base: Settings, workdir: Path, *, ingress_ttl_minutes: int, volume: str | None = None
+) -> Iterator[LiveStack]:
     """Bring up the whole demo stack with every sub-workflow published."""
     if not base.offline_gateway_url:
         raise StackError("The live stack needs the offline AI gateway")
@@ -608,6 +622,6 @@ def launch(base: Settings, workdir: Path, *, ingress_ttl_minutes: int) -> Iterat
     slack = SlackFixture(credentials.slack_bot)
     app = create_app(config)
     slack.install(app)
-    with live_stack(config, credentials, app, slack, workdir) as stack:
+    with live_stack(config, credentials, app, slack, workdir, volume=volume) as stack:
         stack.publish(*SUB_WORKFLOWS)
         yield stack

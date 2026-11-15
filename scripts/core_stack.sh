@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Source this from the repository root after scripts/test_db_env.sh.
-# core_stack_start <offline: true|false> creates a fresh disposable database
+# core_stack_start <offline: true|false> [container-name] [no-traps] creates a fresh disposable database
 # container (and, when offline is true, the offline AI gateway), exports the
 # SWITCHBOARD_* settings core needs, and installs traps that remove everything
-# when the calling script exits.
+# when the calling script exits. A caller that passes no-traps must call
+# core_stack_cleanup itself.
 
 core_stack_cleanup() {
     if [[ $core_stack_offline == true ]]; then
@@ -28,16 +29,24 @@ core_stack_start() {
 
     export SWITCHBOARD_CORE_TEST_GATEWAY
     SWITCHBOARD_CORE_TEST_GATEWAY=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
-    local container
-    container="switchboard-core-check-$(openssl rand -hex 12)"
+    local container=${2:-}
+    if [[ -z $container ]]; then
+        container="switchboard-core-check-$(openssl rand -hex 12)"
+    elif [[ ! $container =~ ^switchboard-core-check-[0-9a-f]{24}$ ]]; then
+        printf 'Invalid disposable container name\n' >&2
+        exit 1
+    fi
     export SWITCHBOARD_CORE_TEST_CONTAINER="$container"
+    # Set before anything is created, so cleanup works from any point onwards.
+    core_stack_ai_compose=(docker compose --env-file .env.example -p "$container" --profile offline-ai)
     docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.core-test.yml \
         --profile test run --detach --no-deps --pull never --name "$container" \
         --publish '127.0.0.1::5432' db-check --core-integration >/dev/null
-    core_stack_ai_compose=(docker compose --env-file .env.example -p "$container" --profile offline-ai)
-    trap core_stack_cleanup EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    if [[ ${3:-} != no-traps ]]; then
+        trap core_stack_cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+    fi
 
     local ready=false attempt logs
     for ((attempt = 0; attempt < 60; attempt++)); do

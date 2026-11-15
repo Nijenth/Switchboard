@@ -73,3 +73,37 @@ watchdog cancels it when it next runs. That is the designed behaviour.
   (or `order_status` for "where … NW-n"), so most free text goes to review.
 - Slice B (the browser console) is a separate process that drives this
   package. It is not part of this slice.
+
+## Ownership and cleanup order (added after review)
+
+This section replaces the three table rows above about the running stack, the
+stale state file and a second `up`.
+
+1. **Claim before create.** `up` first creates `.demo-live/state.json` with
+   an exclusive create. Of two concurrent starts exactly one succeeds; the
+   other exits without running any Docker command. The claimed state already
+   holds the name of every resource the run will create: the database
+   container (which is also the gateway's Compose project name and the prefix
+   of its networks), the n8n volume and the temporary folder.
+2. **A crash or reboot at any point** therefore leaves a state file that
+   names everything that could exist. `down` works from that file alone.
+3. **Liveness.** A claimed stack that has not finished starting counts as
+   alive for 300 seconds. A running stack counts as alive while its heartbeat
+   is younger than 20 seconds. Anything else is stale.
+4. **The state file is deleted last.** On a normal stop the wrapper removes
+   the database and gateway, then `release` removes the volume and folder,
+   asks Docker what still exists under the recorded names, and deletes the
+   state file only if nothing does.
+5. **`down` fails loudly.** If a removal fails, or Docker cannot be asked,
+   `down` prints what remains, keeps the state file and exits non-zero.
+   Running it again continues from the same state. Running it when nothing
+   is left is harmless.
+6. **Only our names.** A name in the state file is used only if it matches
+   the harness's own naming pattern.
+
+| State | Exit | Caller |
+|---|---|---|
+| Claimed, still starting | Becomes running, or stale after 300 seconds | `up`; then `down` |
+| Running | Stop request, Ctrl+C | `down`; the `up` terminal |
+| Stale (crash, reboot, closed terminal) | Leftovers removed, then the state file | `down` |
+| Something could not be removed | State kept, non-zero exit; retry after fixing Docker | `down` again |
