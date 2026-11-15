@@ -71,3 +71,64 @@ reviewer, and the page says so.
   chunk, so a free-text reply can be off-topic. That is why it waits for a
   reviewer.
 - Only cases sent in the current console session are shown or reviewable.
+
+## Changes after review (2026-11-15)
+
+### Deviations from the brief: owner-accepted pending confirmation
+
+Two things differ from the brief. Both are kept after review and are
+**accepted by the owner pending confirmation**. Until the owner confirms,
+treat them as open.
+
+1. **The console runs in the `demo_live up` process**, as a separate app on a
+   separate port, not as a separate operating-system process. Reasoning is
+   under "Deviation from the brief summary" above.
+2. **Six fixed scenarios plus a free-text form replace the guided composer.**
+   The brief asked for a composer that guides the presenter through building
+   a message. The console offers the six scripted messages of `docs/demo.md`
+   as buttons and a plain sender-and-text form.
+
+### A message that is only partly processed
+
+Sending is two stages: deliver the message (ingest and the case pipeline),
+then post reviews and dispatch. If any step fails after the console started a
+send, the message stays in the list marked "Partly processed", with a Retry
+button. The failed response already carries the case.
+
+Retry never creates a second case:
+
+- If the case is known, retry runs only the remaining stage.
+- If the delivery itself failed before a case was seen, retry redelivers with
+  the **same external ID and the same date**. Core's ingest recognises the
+  delivery (its idempotency key and delivery digest match) and returns the
+  original case.
+- Sending the identical sender and text again while an attempt is unfinished
+  is treated as a retry of that attempt.
+
+### Rate limits
+
+| Limit | Value | Exit |
+|---|---|---|
+| Sends and retries per minute | 6 | The window slides. The refusal says how many seconds to wait (`Retry-After`). |
+| Messages per console session | 40 | Restart the stack (`down`, then `up --console`). The database is disposable, so nothing is lost that should be kept. |
+
+A refused request does no work. Retries count toward the per-minute limit
+and not toward the session cap.
+
+### No inline script or style
+
+The page, its script (`/console.js`) and its stylesheet (`/console.css`) are
+three same-origin files. The policy is
+`default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'`
+with no `'unsafe-inline'`. The console token is in a `<meta>` tag of the page
+and the static files hold no token. The script creates every dynamic node
+with `createElement` and `textContent`; a test fails if an HTML sink such as
+`innerHTML` appears in it.
+
+### Added to the live-state table
+
+| State | Exit | Caller |
+|---|---|---|
+| Partly processed message | Retry finishes it; otherwise it ends with the session | Presenter; `down` |
+| Per-minute limit reached | Time | Clock |
+| Session cap reached | Restart the stack | `down`, `up --console` |

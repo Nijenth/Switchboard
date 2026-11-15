@@ -1,63 +1,18 @@
-"""The console's single page. No external assets; all dynamic text is set with textContent."""
+"""The console's page, stylesheet and script.
+
+Served as three same-origin files so the Content-Security-Policy needs no
+'unsafe-inline'. The script builds every dynamic node with createElement and
+textContent; it never parses text as HTML.
+"""
 
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="console-token" content="__TOKEN__">
 <title>Switchboard · live demo console</title>
-<style>
-  :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171a17;
-    color: #f5f2e7; --muted: #c1c8b9; --accent: #dffa9b; --panel: #222721; --line: #515c4d; }
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 1rem; }
-  header, main { max-width: 84rem; margin: 0 auto; }
-  h1 { font-family: Georgia, serif; font-weight: 400; font-size: clamp(1.8rem, 4vw, 2.6rem);
-    margin: .2rem 0 .5rem; letter-spacing: -.02em; }
-  h2 { font-size: .8rem; color: var(--accent); text-transform: uppercase; letter-spacing: .11em;
-    margin: 0 0 .8rem; }
-  .notice { border-left: 2px solid var(--accent); padding-left: 1rem; color: var(--muted);
-    max-width: 62rem; line-height: 1.5; margin: 0 0 1rem; }
-  main { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(0, 1.7fr) minmax(16rem, 1fr);
-    gap: 1rem; align-items: start; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 1rem;
-    padding: 1.1rem; min-width: 0; }
-  button { font: inherit; cursor: pointer; border-radius: .7rem; border: 1px solid var(--line);
-    background: #2c332a; color: inherit; padding: .6rem .8rem; }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 2px; }
-  button:disabled { opacity: .5; cursor: progress; }
-  .scenario { display: block; width: 100%; text-align: left; margin-bottom: .5rem; }
-  .scenario span { display: block; color: var(--muted); font-size: .85rem; margin-top: .2rem; }
-  label { display: block; font-size: .85rem; color: var(--muted); margin: .7rem 0 .25rem; }
-  input, textarea, select { width: 100%; font: inherit; color: inherit; background: #171a17;
-    border: 1px solid var(--line); border-radius: .6rem; padding: .55rem .65rem; }
-  textarea { min-height: 5.5rem; resize: vertical; }
-  .primary { background: var(--accent); color: #21291a; font-weight: 700; border-color: var(--accent);
-    margin-top: .8rem; }
-  .hint { color: var(--muted); font-size: .85rem; line-height: 1.45; }
-  #status { min-height: 1.5rem; margin: 0 0 .8rem; color: var(--accent); }
-  #status.error { color: #ffb4a2; }
-  .case, .review { border: 1px solid var(--line); border-radius: .8rem; padding: .9rem;
-    margin-bottom: .8rem; overflow-wrap: anywhere; }
-  .case small, .review small { color: var(--muted); }
-  blockquote { margin: .5rem 0; background: #343e32; padding: .7rem .9rem;
-    border-radius: .8rem .8rem .8rem .2rem; white-space: pre-wrap; line-height: 1.5; }
-  blockquote.reply { background: #2b3440; border-radius: .8rem .8rem .2rem .8rem; }
-  .badges { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
-  .badge { background: var(--accent); color: #21291a; border-radius: 2rem; padding: .25rem .7rem;
-    font-size: .82rem; font-weight: 700; }
-  details { margin-top: .5rem; }
-  summary { cursor: pointer; color: var(--muted); }
-  ol { padding-left: 1.2rem; margin: .5rem 0 0; }
-  li { margin: .3rem 0; font-size: .88rem; line-height: 1.45; }
-  .row { display: flex; gap: .5rem; margin-top: .6rem; }
-  .row button { flex: 1; }
-  .approve { background: var(--accent); color: #21291a; font-weight: 700; }
-  .empty { color: var(--muted); font-style: italic; }
-  @media (max-width: 64rem) { main { grid-template-columns: 1fr; } }
-</style>
+<link rel="stylesheet" href="/console.css">
 </head>
 <body>
 <header>
@@ -100,8 +55,68 @@ PAGE = """<!doctype html>
     database against the role the policy requires.</p>
   </section>
 </main>
-<script>
-const TOKEN = "__TOKEN__";
+<script src="/console.js"></script>
+</body>
+</html>
+"""
+
+STYLE = """:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171a17;
+  color: #f5f2e7; --muted: #c1c8b9; --accent: #dffa9b; --panel: #222721; --line: #515c4d; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 1rem; }
+header, main { max-width: 84rem; margin: 0 auto; }
+h1 { font-family: Georgia, serif; font-weight: 400; font-size: clamp(1.8rem, 4vw, 2.6rem);
+  margin: .2rem 0 .5rem; letter-spacing: -.02em; }
+h2 { font-size: .8rem; color: var(--accent); text-transform: uppercase; letter-spacing: .11em;
+  margin: 0 0 .8rem; }
+.notice { border-left: 2px solid var(--accent); padding-left: 1rem; color: var(--muted);
+  max-width: 62rem; line-height: 1.5; margin: 0 0 1rem; }
+main { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(0, 1.7fr) minmax(16rem, 1fr);
+  gap: 1rem; align-items: start; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 1rem;
+  padding: 1.1rem; min-width: 0; }
+button { font: inherit; cursor: pointer; border-radius: .7rem; border: 1px solid var(--line);
+  background: #2c332a; color: inherit; padding: .6rem .8rem; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .5; cursor: progress; }
+.scenario { display: block; width: 100%; text-align: left; margin-bottom: .5rem; }
+.scenario span { display: block; color: var(--muted); font-size: .85rem; margin-top: .2rem; }
+label { display: block; font-size: .85rem; color: var(--muted); margin: .7rem 0 .25rem; }
+input, textarea, select { width: 100%; font: inherit; color: inherit; background: #171a17;
+  border: 1px solid var(--line); border-radius: .6rem; padding: .55rem .65rem; }
+textarea { min-height: 5.5rem; resize: vertical; }
+.primary { background: var(--accent); color: #21291a; font-weight: 700; border-color: var(--accent);
+  margin-top: .8rem; }
+.hint { color: var(--muted); font-size: .85rem; line-height: 1.45; }
+#status { min-height: 1.5rem; margin: 0 0 .8rem; color: var(--accent); }
+#status.error { color: #ffb4a2; }
+.case, .review { border: 1px solid var(--line); border-radius: .8rem; padding: .9rem;
+  margin-bottom: .8rem; overflow-wrap: anywhere; }
+.case.partial { border-color: #f3d5a4; }
+.case small, .review small { color: var(--muted); }
+.problem { color: #f3d5a4; margin: .4rem 0; }
+blockquote { margin: .5rem 0; background: #343e32; padding: .7rem .9rem;
+  border-radius: .8rem .8rem .8rem .2rem; white-space: pre-wrap; line-height: 1.5; }
+blockquote.reply { background: #2b3440; border-radius: .8rem .8rem .2rem .8rem; }
+.badges { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
+.badge { background: var(--accent); color: #21291a; border-radius: 2rem; padding: .25rem .7rem;
+  font-size: .82rem; font-weight: 700; }
+.badge.warn { background: #f3d5a4; }
+details { margin-top: .5rem; }
+summary { cursor: pointer; color: var(--muted); }
+ol { padding-left: 1.2rem; margin: .5rem 0 0; }
+li { margin: .3rem 0; font-size: .88rem; line-height: 1.45; }
+.row { display: flex; gap: .5rem; margin-top: .6rem; }
+.row button { flex: 1; }
+.approve { background: var(--accent); color: #21291a; font-weight: 700; }
+.empty { color: var(--muted); font-style: italic; }
+@media (max-width: 64rem) { main { grid-template-columns: 1fr; } }
+"""
+
+SCRIPT = """"use strict";
+const TOKEN = document.querySelector('meta[name="console-token"]').content;
 const FIELDS = {
   message: ["body_redacted"], classification: ["intent", "confidence", "flags"],
   lookup: ["tool_key", "status", "result_reason"],
@@ -109,7 +124,9 @@ const FIELDS = {
   action: ["tool_key", "risk_level", "status", "amount", "currency"],
   approval: ["required_role", "decision"], audit: ["audit_event", "audit_sequence"]
 };
+const WORKING = "Running the n8n pipeline (up to a minute)…";
 const status = document.getElementById("status");
+// Every dynamic value goes through textContent. Nothing here parses text as markup.
 const el = (tag, cls, text) => {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -131,13 +148,12 @@ async function call(path, body, working) {
       body: body ? JSON.stringify(body) : undefined
     });
     const data = await response.json();
+    // A failed step still returns the current cases, so a half-processed one stays visible.
+    if (Array.isArray(data.cases)) render(data);
+    setBusy(false, response.ok && body ? "Done." : "");
     if (!response.ok) {
-      setBusy(false);
       fail(typeof data.detail === "string" ? data.detail : "The request was not accepted.");
-      return;
     }
-    render(data);
-    setBusy(false, body ? "Done." : "");
   } catch (error) {
     setBusy(false);
     fail("The console server did not answer. Is scripts/demo_live still running?");
@@ -164,13 +180,23 @@ function render(data) {
   cases.replaceChildren();
   if (!data.cases.length) cases.append(el("p", "empty", "Nothing sent yet."));
   for (const item of data.cases) {
-    const card = el("article", "case");
+    const card = el("article", item.partial ? "case partial" : "case");
     card.append(el("small", "", item.label + " · from " + item.sender));
     card.append(el("blockquote", "", item.text));
     const badges = el("div", "badges");
+    if (item.partial) badges.append(el("span", "badge warn", "Partly processed"));
     for (const badge of item.badges) badges.append(el("span", "badge", badge));
-    if (!item.badges.length) badges.append(el("small", "", "No outcome recorded yet."));
+    if (!item.badges.length && !item.partial) {
+      badges.append(el("small", "", "No outcome recorded yet."));
+    }
     card.append(badges);
+    if (item.partial) {
+      card.append(el("p", "problem", item.problem));
+      const retry = el("button", "", "Retry the remaining steps");
+      retry.addEventListener("click", () =>
+        call("/api/cases/" + encodeURIComponent(item.external_id) + "/retry", {}, WORKING));
+      card.append(retry);
+    }
     if (item.reply) {
       card.append(el("small", "", item.reply_status === "sent"
         ? "Reply sent (mock outbound)"
@@ -203,7 +229,6 @@ function render(data) {
     reviews.append(card);
   }
 }
-const WORKING = "Running the n8n pipeline (up to a minute)…";
 document.querySelectorAll(".scenario").forEach(button => {
   button.addEventListener("click", () => call("/api/send", {scenario: button.dataset.key}, WORKING));
 });
@@ -214,7 +239,4 @@ document.getElementById("free").addEventListener("submit", event => {
   call("/api/send", {sender: document.getElementById("sender").value, text}, WORKING);
 });
 call("/api/state");
-</script>
-</body>
-</html>
 """

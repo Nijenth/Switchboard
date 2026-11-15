@@ -10,7 +10,7 @@ import re
 import socket
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -73,6 +73,14 @@ N8N_FAILURE_HINTS = (
     "is not a function",
     "ambiguous",
 )
+
+
+def new_external_id() -> str:
+    return "switchboard-live-" + uuid4().hex
+
+
+def delivery_date() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class StackError(RuntimeError):
@@ -390,7 +398,13 @@ class LiveStack:
             encoding="utf-8",
         )
 
-    def n8n(self, *command: str, expect_failure: bool = False, name: str | None = None) -> None:
+    def n8n(
+        self,
+        *command: str,
+        expect_failure: bool = False,
+        name: str | None = None,
+        fault_injected: Callable[[], bool] | None = None,
+    ) -> None:
         """Run one n8n CLI command in a throwaway container on the scratch volume.
 
         Raises StackError when the exit status is not the expected one. The message
@@ -418,7 +432,9 @@ class LiveStack:
             raise StackError(
                 f"n8n {' '.join(command)} timed out after {N8N_TIMEOUT_SECONDS} seconds"
             ) from None
-        if (result.returncode != 0) == expect_failure:
+        if (result.returncode != 0) == expect_failure and (
+            fault_injected is None or fault_injected()
+        ):
             return
         output = result.stdout + result.stderr
         codes = sorted(set(re.findall(r'"httpCode":\s*"([1-5][0-9]{2})"', output)))
@@ -441,18 +457,30 @@ class LiveStack:
         for workflow_id in workflow_ids:
             self.n8n("publish:workflow", f"--id={workflow_id}")
 
-    def send_email(self, sender: str, text: str, *, subject: str | None = None) -> str:
-        """Send one new inbound email through wf_ingest_email. Returns its external ID.
+    def send_email(
+        self,
+        sender: str,
+        text: str,
+        *,
+        subject: str | None = None,
+        external_id: str | None = None,
+        date: str | None = None,
+    ) -> str:
+        """Send one inbound email through wf_ingest_email. Returns its external ID.
 
         The harness's own import copy of the workflow is replaced with a copy whose
         manual fixture holds only this message. The exported workflow is untouched.
+
+        To deliver the same message again (a retry), pass the ``external_id`` and
+        ``date`` of the first attempt: core then recognises the delivery and keeps
+        the original case instead of creating a second one.
         """
-        external_id = "switchboard-live-" + uuid4().hex
+        external_id = external_id or new_external_id()
         message = EmailMessage(
             external_id,
             sender,
             text,
-            date=datetime.now(UTC).isoformat(timespec="seconds"),
+            date=date or delivery_date(),
             subject=subject,
         )
         live = self.imports / "live"

@@ -6,12 +6,14 @@ route and the browser never receives a stack credential.
 """
 
 import re
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from html import escape
 from runpy import run_path
 from secrets import compare_digest, token_urlsafe
 from threading import Lock
+from time import monotonic
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -21,7 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from app.adapters.db import create_pool
-from harness.console_page import PAGE
+from harness.console_page import PAGE, SCRIPT, STYLE
 from harness.live_stack import (
     MANAGER_SLACK,
     NORTHWIND,
@@ -29,11 +31,22 @@ from harness.live_stack import (
     ROOT,
     LiveStack,
     StackError,
+    delivery_date,
+    new_external_id,
     set_northwind,
 )
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 EMAIL_ADDRESS = re.compile(r"[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,4}")
+EXTERNAL_ID = re.compile(r"switchboard-live-[0-9a-f]{32}")
+# Each send runs several n8n containers. These limits keep a stuck key or a script
+# from queueing work without end. Both are documented with their exits in ADR 0031.
+SENDS_PER_MINUTE = 6
+SESSION_SEND_CAP = 40
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 # The fixture reviewer who signs a decision for each required role.
 REVIEWERS = {"manager": (MANAGER_SLACK, "Marco (Ops Manager)")}
 DEFAULT_REVIEWER = (REVIEWER, "Alex (Admin)")
@@ -43,6 +56,10 @@ REFUND_BLOCKS = {
     "not_delivered": "Refund blocked: not delivered yet",
     "order_not_found": "Refund blocked: order not found",
 }
+PARTIAL = (
+    "The message reached the system but a later step failed, so this case is only partly "
+    "processed. Retry runs the remaining steps for the same message."
+)
 
 
 @dataclass(frozen=True)
@@ -103,8 +120,14 @@ SCENARIOS = (
 
 
 class Backend(Protocol):
-    def send(self, sender: str, text: str) -> str:
-        """Run one inbound message through the stack. Returns its case ID."""
+    def ingest(self, sender: str, text: str, external_id: str, date: str) -> None:
+        """Deliver one inbound message. The same external ID and date redeliver it."""
+
+    def find_case(self, external_id: str) -> str | None:
+        """The case a delivered message belongs to, if it was ingested."""
+
+    def advance(self) -> None:
+        """Post new reviews to the reviewer fixture and dispatch what policy allows."""
 
     def decide(self, review_id: str, reviewer: str, decision: str) -> None:
         """Submit a signed reviewer decision, then dispatch approved work."""
@@ -126,11 +149,10 @@ class StackBackend:
         self._read_timeline = report["read_timeline"]
         self._email = report["EMAIL"]
 
-    def send(self, sender: str, text: str) -> str:
-        external_id = self._stack.send_email(sender, text)
-        # Post any new review to the Slack fixture, then send what policy already allows.
-        self._stack.n8n("execute", "--id=SwitchboardSlack1")
-        self._stack.n8n("execute", "--id=SwitchboardDispatch1")
+    def ingest(self, sender: str, text: str, external_id: str, date: str) -> None:
+        self._stack.send_email(sender, text, external_id=external_id, date=date)
+
+    def find_case(self, external_id: str) -> str | None:
         with create_pool(self._stack.config) as pool, pool.connection() as conn, conn.transaction():
             set_northwind(conn)
             rows = conn.execute(
@@ -138,9 +160,13 @@ class StackBackend:
                     WHERE tenant_id=%s AND external_message_id=%s""",
                 (NORTHWIND, external_id),
             ).fetchall()
-        if len(rows) != 1:
-            raise StackError("The message was not ingested as exactly one case")
-        return str(rows[0][0])
+        if len(rows) > 1:
+            raise StackError("One delivered message belongs to more than one case")
+        return str(rows[0][0]) if rows else None
+
+    def advance(self) -> None:
+        self._stack.n8n("execute", "--id=SwitchboardSlack1")
+        self._stack.n8n("execute", "--id=SwitchboardDispatch1")
 
     def decide(self, review_id: str, reviewer: str, decision: str) -> None:
         self._stack.interaction(review_id, decision, reviewer)
@@ -230,15 +256,38 @@ class DecisionInput(BaseModel):
     decision: Literal["approve", "reject"]
 
 
+@dataclass
+class Case:
+    """One message sent from this console session."""
+
+    external_id: str
+    date: str
+    label: str
+    sender: str
+    text: str
+    case_id: str | None = None
+    partial: bool = True  # until every step for the message has run
+
+
 class Console:
-    def __init__(self, backend: Backend) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        *,
+        clock: Callable[[], float] = monotonic,
+        sends_per_minute: int = SENDS_PER_MINUTE,
+        session_send_cap: int = SESSION_SEND_CAP,
+    ) -> None:
         self.backend = backend
         self.token = token_urlsafe(32)
         self._busy = Lock()
-        self._cases: list[dict[str, str]] = []
+        self._cases: list[Case] = []
+        self._clock = clock
+        self._per_minute, self._cap = sends_per_minute, session_send_cap
+        self._recent: deque[float] = deque()
 
     def state(self) -> dict[str, Any]:
-        case_ids = [case["case_id"] for case in self._cases]
+        case_ids = [case.case_id for case in self._cases if case.case_id]
         timelines = self.backend.timelines(case_ids)
         reviews = self.backend.pending(case_ids)
         for review in reviews:
@@ -246,18 +295,61 @@ class Console:
         waiting = {review["case_id"] for review in reviews}
         cases = []
         for case in reversed(self._cases):
-            rows = timelines.get(case["case_id"], [])
+            rows = timelines.get(case.case_id, []) if case.case_id else []
             drafts = [row for row in rows if row.get("draft_body")]
             cases.append(
                 {
-                    **case,
-                    "badges": outcome_badges(rows, case["case_id"] in waiting),
+                    "external_id": case.external_id,
+                    "case_id": case.case_id,
+                    "label": case.label,
+                    "sender": case.sender,
+                    "text": case.text,
+                    "partial": case.partial,
+                    "problem": PARTIAL if case.partial else None,
+                    "badges": outcome_badges(rows, case.case_id in waiting),
                     "reply": drafts[-1]["draft_body"] if drafts else None,
                     "reply_status": drafts[-1].get("status") if drafts else None,
                     "timeline": rows,
                 }
             )
         return {"cases": cases, "reviews": reviews}
+
+    def _allow(self, *, new_message: bool) -> None:
+        """Rate limits. Checked before any work starts, so a refused request costs nothing."""
+        now = self._clock()
+        while self._recent and now - self._recent[0] >= 60:
+            self._recent.popleft()
+        if new_message and len(self._cases) >= self._cap:
+            raise HTTPException(
+                status_code=429,
+                detail=f"This session has reached its limit of {self._cap} messages. "
+                "Restart the demo stack for a fresh session.",
+            )
+        if len(self._recent) >= self._per_minute:
+            wait = int(60 - (now - self._recent[0])) + 1
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many sends in the last minute. Try again in {wait} seconds.",
+                headers={"Retry-After": str(wait)},
+            )
+        self._recent.append(now)
+
+    def _process(self, case: Case) -> None:
+        """Run whatever steps the message still needs. Leaves ``partial`` set on failure."""
+        try:
+            if case.case_id is None:
+                try:
+                    self.backend.ingest(case.sender, case.text, case.external_id, case.date)
+                finally:
+                    # Ingest may have succeeded even when a later node in the workflow failed.
+                    case.case_id = self.backend.find_case(case.external_id)
+            if case.case_id is None:
+                raise StackError("The message was not ingested")
+            self.backend.advance()
+        except StackError:
+            case.partial = True
+            raise
+        case.partial = False
 
     def send(self, request: SendInput) -> None:
         if request.scenario is not None:
@@ -270,13 +362,30 @@ class Console:
             if not EMAIL_ADDRESS.fullmatch(sender) or not text or "\x00" in text:
                 raise HTTPException(status_code=422, detail="Enter a sender address and a message")
         with self._exclusive():
-            case_id = self.backend.send(sender, text)
-            # The typed text is shown back to the person who typed it. Stored text stays redacted.
-            self._cases.append({"case_id": case_id, "label": label, "sender": sender, "text": text})
+            # Sending the same input again while its first attempt is unfinished is a retry
+            # of that attempt, never a second case.
+            unfinished = next(
+                (c for c in self._cases if c.partial and (c.sender, c.text) == (sender, text)),
+                None,
+            )
+            self._allow(new_message=unfinished is None)
+            if unfinished is None:
+                # Typed text is shown back to the person who typed it. Stored text stays redacted.
+                unfinished = Case(new_external_id(), delivery_date(), label, sender, text)
+                self._cases.append(unfinished)
+            self._process(unfinished)
+
+    def retry(self, external_id: str) -> None:
+        with self._exclusive():
+            case = next((c for c in self._cases if c.external_id == external_id), None)
+            if case is None or not case.partial:
+                raise HTTPException(status_code=404, detail="Nothing to retry for that message")
+            self._allow(new_message=False)
+            self._process(case)
 
     def decide(self, review_id: str, decision: str) -> None:
         with self._exclusive():
-            case_ids = [case["case_id"] for case in self._cases]
+            case_ids = [case.case_id for case in self._cases if case.case_id]
             review = next(
                 (item for item in self.backend.pending(case_ids) if item["id"] == review_id), None
             )
@@ -303,10 +412,11 @@ class _Exclusive:
         self._lock.release()
 
 
-def create_console(backend: Backend) -> FastAPI:
-    console = Console(backend)
+def create_console(backend: Backend, **limits: Any) -> FastAPI:
+    console = Console(backend, **limits)
     app = FastAPI(title="Switchboard demo console", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.console = console
+    static_headers = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 
     @app.middleware("http")
     async def loopback_only(
@@ -323,10 +433,19 @@ def create_console(backend: Backend) -> FastAPI:
         if token is None or not compare_digest(token.encode(), console.token.encode()):
             raise HTTPException(status_code=403, detail="Missing console token")
 
+    def failed_step(error: StackError) -> JSONResponse:
+        # StackError text holds status codes and node names only, never payloads.
+        # The current cases ride along so a partly processed one is shown, not lost.
+        body = {"detail": f"A stack step failed. {error}"[:600]}
+        try:
+            body.update(console.state())
+        except StackError:
+            pass
+        return JSONResponse(body, status_code=502)
+
     @app.exception_handler(StackError)
     async def stack_failed(_: Request, error: StackError) -> JSONResponse:
-        # StackError text holds status codes and node names only, never payloads.
-        return JSONResponse({"detail": f"A stack step failed. {error}"[:600]}, status_code=502)
+        return failed_step(error)
 
     @app.get("/", response_class=HTMLResponse)
     def page() -> HTMLResponse:
@@ -337,15 +456,17 @@ def create_console(backend: Backend) -> FastAPI:
         )
         html = PAGE.replace("__TOKEN__", console.token).replace("__SCENARIOS__", scenarios)
         return HTMLResponse(
-            html,
-            headers={
-                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
-                "script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
-                "form-action 'none'; frame-ancestors 'none'",
-                "X-Content-Type-Options": "nosniff",
-                "Referrer-Policy": "no-referrer",
-            },
+            html, headers={"Content-Security-Policy": CONTENT_SECURITY_POLICY, **static_headers}
         )
+
+    # The script and stylesheet are static: they hold no token and no session data.
+    @app.get("/console.js")
+    def script() -> Response:
+        return Response(SCRIPT, media_type="text/javascript", headers=static_headers)
+
+    @app.get("/console.css")
+    def style() -> Response:
+        return Response(STYLE, media_type="text/css", headers=static_headers)
 
     # Plain ``def`` routes run in a worker thread, so a slow n8n step does not block the server.
     @app.get("/api/state")
@@ -359,6 +480,16 @@ def create_console(backend: Backend) -> FastAPI:
     ) -> dict[str, Any]:
         authorize(x_console_token)
         console.send(request)
+        return console.state()
+
+    @app.post("/api/cases/{external_id}/retry")
+    def retry(
+        external_id: str, x_console_token: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        authorize(x_console_token)
+        if not EXTERNAL_ID.fullmatch(external_id):
+            raise HTTPException(status_code=404, detail="Nothing to retry for that message")
+        console.retry(external_id)
         return console.state()
 
     @app.post("/api/reviews/{review_id}")

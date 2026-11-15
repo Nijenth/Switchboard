@@ -6,11 +6,11 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import psycopg
 import pytest
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from fastapi.testclient import TestClient
 from starlette.responses import Response
 from test_postgres import CASE_ID
 
@@ -27,6 +27,7 @@ from harness.live_stack import (
     docker,
     live_stack,
     prepare_tenant,
+    serve,
     set_northwind,
     stack_settings,
     verify_cluster,
@@ -195,7 +196,13 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
         stack.interaction(action_review_id)
         worker_name = "switchboard-crash-" + uuid4().hex
         kill_worker = lambda: docker("kill", worker_name)
-        stack.n8n("execute", "--id=SwitchboardDispatch1", expect_failure=True, name=worker_name)
+        stack.n8n(
+            "execute",
+            "--id=SwitchboardDispatch1",
+            expect_failure=True,
+            name=worker_name,
+            fault_injected=lambda: completion_lost,
+        )
         assert completion_lost
         with psycopg.connect(
             host=config.db_host,
@@ -247,7 +254,13 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             lost_action = refund_review[4]
             completion_lost = False
             worker_name = "switchboard-refund-crash-" + uuid4().hex
-            stack.n8n("execute", "--id=SwitchboardDispatch1", expect_failure=True, name=worker_name)
+            stack.n8n(
+                "execute",
+                "--id=SwitchboardDispatch1",
+                expect_failure=True,
+                name=worker_name,
+                fault_injected=lambda: completion_lost,
+            )
             assert completion_lost
             with psycopg.connect(
                 host=config.db_host,
@@ -432,8 +445,14 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
                 os.environ["SWITCHBOARD_CORE_TEST_CONTAINER"],
                 os.environ["SWITCHBOARD_CORE_TEST_MARKER"],
             )
-            browser = TestClient(app_console, base_url="http://127.0.0.1:8780")
-            browser.headers["X-Console-Token"] = app_console.state.console.token
+            # Real HTTP on a loopback port, as the browser uses it.
+            console_server = serve(app_console)
+            console_url = console_server.__enter__()
+            browser = httpx.Client(
+                base_url=console_url,
+                headers={"X-Console-Token": app_console.state.console.token},
+                timeout=300,
+            )
             sent = browser.post(
                 "/api/send",
                 json={"sender": "liam.chen@example.com", "text": "Do you sell gift cards?"},
@@ -460,6 +479,40 @@ def test_n8n_mock_outbound_loop(tmp_path: Path) -> None:
             assert console_case["badges"] == ["Reply sent after review"]
             assert console_case["reply_status"] == "sent"
             print("Console | free text | review approved by fixture admin | reply sent")
+            browser.close()
+            console_server.__exit__(None, None, None)
+
+            # A console retry redelivers the same message. Core must keep one message and
+            # one case, and must not raise a second draft, review or outbound action.
+            def console_counts() -> tuple[object, ...] | None:
+                with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
+                    set_northwind(conn)
+                    return conn.execute(
+                        """SELECT count(DISTINCT m.id), count(DISTINCT m.case_id),
+                             (SELECT count(*) FROM public.drafts d WHERE d.tenant_id=%s
+                               AND d.case_id=%s),
+                             (SELECT count(*) FROM public.approval_requests r
+                               WHERE r.tenant_id=%s AND r.case_id=%s),
+                             (SELECT count(*) FROM public.actions a WHERE a.tenant_id=%s
+                               AND a.case_id=%s AND a.risk_level<>'read')
+                           FROM public.messages m
+                           WHERE m.tenant_id=%s AND m.external_message_id=%s""",
+                        (
+                            *(NORTHWIND, console_case["case_id"]) * 3,
+                            NORTHWIND,
+                            console_case["external_id"],
+                        ),
+                    ).fetchone()
+
+            counts_before = console_counts()
+            assert counts_before is not None and counts_before[:2] == (1, 1)
+            (sent_case,) = app_console.state.console._cases
+            app_console.state.console.backend.ingest(
+                sent_case.sender, sent_case.text, sent_case.external_id, sent_case.date
+            )
+            app_console.state.console.backend.advance()
+            assert console_counts() == counts_before
+            print("Console | same message redelivered | still one case, no new draft or action")
             print(f"NW-1002 | live message | ORDER_STATUS: auto | draft sent\n{live_reply[0][3]}")
 
     with create_pool(config) as pool, pool.connection() as conn, conn.transaction():
