@@ -401,7 +401,10 @@ def main() -> int:
     report = run(args.tenant, args.pack, args.version, providers)
     print(json.dumps(report, indent=2))
     return int(
-        any(r["gate_violations"] or r["budget_blocked_cases"] for r in report["providers"].values())
+        bool(report["redaction_misses"])
+        or any(
+            r["gate_violations"] or r["budget_blocked_cases"] for r in report["providers"].values()
+        )
     )
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from app.guardrails import detect_language, detect_prompt_injection, inspect_message
+from app.guardrails import detect_language, detect_prompt_injection, inspect_message, redact_text
 
 
 def test_redaction_preserves_order_reference() -> None:
@@ -19,6 +19,21 @@ def test_redaction_preserves_order_reference() -> None:
 
 def test_normalization_precedes_redaction() -> None:
     assert inspect_message("ｓａｍ＠example.te\u200bst").body_redacted == "[EMAIL]"
+
+
+def test_redacts_multiple_known_names_before_shorter_overlapping_names() -> None:
+    text = "Pencil it in as Linn Moss; send the label to Åsa Norr and Linn."
+    names = ["Linn", " LINN MOSS ", "Åsa No\u200brr"]
+    redacted = redact_text(text, known_names=names)
+    assert redacted == "Pencil it in as [NAME]; send the label to [NAME] and [NAME]."
+    assert redact_text(redacted, known_names=names) == redacted
+
+
+def test_explicit_name_cue_takes_precedence_over_city_ambiguity() -> None:
+    assert redact_text("My name is Paris.") == "My name is [NAME]."
+    assert (
+        redact_text("Bonjour Paris, nous livrons demain.") == "Bonjour Paris, nous livrons demain."
+    )
 
 
 @pytest.mark.parametrize(

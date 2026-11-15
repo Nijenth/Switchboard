@@ -163,7 +163,14 @@ def draft_router(
                 "When no evidence applies, leave citations empty for human review."
             )
             accounting = Accounting(
-                pool, gateway, tenant, trace, redacted, "draft", request.case_id, request.message_id
+                pool,
+                gateway,
+                tenant,
+                trace,
+                redact_text(redacted),
+                "draft",
+                request.case_id,
+                request.message_id,
             )
             evidence = [{"id": chunk, "content": content} for chunk, content in sources.items()]
             proposal = None

@@ -1,0 +1,103 @@
+{"text": "My name is Elara Fenn. Can I change the recipient?", "language": "en", "kind": "name", "spans": {"name": ["Elara Fenn"]}}
+{"text": "Please change the delivery address for Dana Fen to the new address.", "language": "en", "kind": "name", "spans": {"name": ["Dana Fen"]}}
+{"text": "The parcel is for Iona Vale.", "language": "en", "kind": "name", "spans": {"name": ["Iona Vale"]}}
+{"text": "Hi Anna, can you help with my return?", "language": "en", "kind": "name", "spans": {"name": ["Anna"]}}
+{"text": "Thanks, Tom Baker", "language": "en", "kind": "name", "spans": {"name": ["Tom Baker"]}}
+{"text": "Please mark the envelope c/o Orin Bell.", "language": "en", "kind": "name", "spans": {"name": ["Orin Bell"]}}
+{"text": "Please write back on Monday or Tuesday.", "language": "en", "kind": "name", "spans": {}}
+{"text": "Deliver to 82 Juniper Lane, Unit C.", "language": "en", "kind": "street", "spans": {"street": ["82 Juniper Lane"]}}
+{"text": "Please replace the address with 417 Moss Court.", "language": "en", "kind": "street", "spans": {"street": ["417 Moss Court"]}}
+{"text": "Use 21 Willow Walk for the return label.", "language": "en", "kind": "street", "spans": {"street": ["21 Willow Walk"]}}
+{"text": "The city line reads 02139 Cambridge.", "language": "en", "kind": "postcode", "spans": {"postcode": ["02139"]}}
+{"text": "The label says SW1A 1AA London.", "language": "en", "kind": "postcode", "spans": {"postcode": ["SW1A 1AA"]}}
+{"text": "Call me on (202) 555-0147.", "language": "en", "kind": "phone", "spans": {"phone": ["(202) 555-0147"]}}
+{"text": "Use +1 415 555 0108 for delivery updates.", "language": "en", "kind": "phone", "spans": {"phone": ["+1 415 555 0108"]}}
+{"text": "Use quill+returns@example.test for confirmation.", "language": "en", "kind": "email", "spans": {"email": ["quill+returns@example.test"]}}
+{"text": "The test card reads 4111 1111 1111 1111.", "language": "en", "kind": "card", "spans": {"card": ["4111 1111 1111 1111"]}}
+{"text": "Thanks, Northwind Apparel", "language": "en", "kind": "name", "spans": {}}
+{"text": "Is the label for Denim Jacket?", "language": "en", "kind": "name", "spans": {}}
+{"text": "I need a replacement for Moss Green Cap.", "language": "en", "kind": "name", "spans": {}}
+{"text": "Order NW-1003 is already in Boston.", "language": "en", "kind": "postcode", "spans": {}}
+{"text": "We sell 27 Denim Jacket units.", "language": "en", "kind": "street", "spans": {}}
+{"text": "SKU JKT-DEN-M and order NW-1003 were shipped by UPS.", "language": "en", "kind": "phone", "spans": {}}
+{"text": "SKU 4111-XL is out of stock.", "language": "en", "kind": "card", "spans": {}}
+{"text": "Read example.test and check DHL.", "language": "en", "kind": "email", "spans": {}}
+{"text": "Bonjour, je m’appelle Élodie Varenne. Pouvez-vous vérifier mon colis ?", "language": "fr", "kind": "name", "spans": {"name": ["Élodie Varenne"]}}
+{"text": "Bonjour Léonie, je vous écris pour mon colis.", "language": "fr", "kind": "name", "spans": {"name": ["Léonie"]}}
+{"text": "Merci, Noé Valmont", "language": "fr", "kind": "name", "spans": {"name": ["Noé Valmont"]}}
+{"text": "Le paquet est c/o Adrien Lacour.", "language": "fr", "kind": "name", "spans": {"name": ["Adrien Lacour"]}}
+{"text": "Livrez au 18 rue des Amandiers, au deuxième étage.", "language": "fr", "kind": "street", "spans": {"street": ["18 rue des Amandiers"]}}
+{"text": "Adresse corrigée : rue du Grand Orme 42.", "language": "fr", "kind": "street", "spans": {"street": ["rue du Grand Orme 42"]}}
+{"text": "Le colis doit aller au 7 avenue des Lanternes.", "language": "fr", "kind": "street", "spans": {"street": ["7 avenue des Lanternes"]}}
+{"text": "Ville destinataire : 44000 Nantes.", "language": "fr", "kind": "postcode", "spans": {"postcode": ["44000"]}}
+{"text": "La fiche indique 75011 Paris.", "language": "fr", "kind": "postcode", "spans": {"postcode": ["75011"]}}
+{"text": "Appelez-moi au +33 6 12 34 56 78.", "language": "fr", "kind": "phone", "spans": {"phone": ["+33 6 12 34 56 78"]}}
+{"text": "Mon numéro : 01 99 00 12 34.", "language": "fr", "kind": "phone", "spans": {"phone": ["01 99 00 12 34"]}}
+{"text": "Mon courriel est elodie@example.test.", "language": "fr", "kind": "email", "spans": {"email": ["elodie@example.test"]}}
+{"text": "Carte de test : 5555 5555 5555 4444.", "language": "fr", "kind": "card", "spans": {"card": ["5555 5555 5555 4444"]}}
+{"text": "Bonjour Paris, nous livrons vendredi.", "language": "fr", "kind": "name", "spans": {}}
+{"text": "Merci, DHL", "language": "fr", "kind": "name", "spans": {}}
+{"text": "Le produit Avenue Coat est disponible.", "language": "fr", "kind": "street", "spans": {}}
+{"text": "Le colis est à Paris depuis lundi.", "language": "fr", "kind": "postcode", "spans": {}}
+{"text": "DHL expédie NW-1003 jeudi.", "language": "fr", "kind": "phone", "spans": {}}
+{"text": "Northwind Apparel livre à Lyon en mars.", "language": "fr", "kind": "email", "spans": {}}
+{"text": "Hola, me llamo Iñés Albor. Necesito ayuda.", "language": "es", "kind": "name", "spans": {"name": ["Iñés Albor"]}}
+{"text": "Hola Lucía, ¿puedes revisar el pedido?", "language": "es", "kind": "name", "spans": {"name": ["Lucía"]}}
+{"text": "Gracias, Teo Montalvo", "language": "es", "kind": "name", "spans": {"name": ["Teo Montalvo"]}}
+{"text": "Ponga c/o Nuria Vidal en la etiqueta.", "language": "es", "kind": "name", "spans": {"name": ["Nuria Vidal"]}}
+{"text": "La dirección correcta es calle del Olmo 26.", "language": "es", "kind": "street", "spans": {"street": ["calle del Olmo 26"]}}
+{"text": "Dejen el paquete en avenida de la Luna 14B, por favor.", "language": "es", "kind": "street", "spans": {"street": ["avenida de la Luna 14B"]}}
+{"text": "La etiqueta dice 19 Calle del Viento.", "language": "es", "kind": "street", "spans": {"street": ["19 Calle del Viento"]}}
+{"text": "La etiqueta dice 28013 Madrid.", "language": "es", "kind": "postcode", "spans": {"postcode": ["28013"]}}
+{"text": "Ciudad: 08002 Barcelona.", "language": "es", "kind": "postcode", "spans": {"postcode": ["08002"]}}
+{"text": "Mi teléfono es +34 612 345 678.", "language": "es", "kind": "phone", "spans": {"phone": ["+34 612 345 678"]}}
+{"text": "Llámenme al 612 345 678.", "language": "es", "kind": "phone", "spans": {"phone": ["612 345 678"]}}
+{"text": "Escribe a nuria@example.test, gracias.", "language": "es", "kind": "email", "spans": {"email": ["nuria@example.test"]}}
+{"text": "Tarjeta de prueba: 4000000000000002.", "language": "es", "kind": "card", "spans": {"card": ["4000000000000002"]}}
+{"text": "Hola Madrid, la promoción termina el martes.", "language": "es", "kind": "name", "spans": {}}
+{"text": "Gracias, UPS", "language": "es", "kind": "name", "spans": {}}
+{"text": "La camisa Calle Luna está agotada.", "language": "es", "kind": "street", "spans": {}}
+{"text": "Entrega en Madrid en abril.", "language": "es", "kind": "postcode", "spans": {}}
+{"text": "El SKU CAM-1003 está disponible.", "language": "es", "kind": "card", "spans": {}}
+{"text": "¿Dónde está NW-1003?", "language": "es", "kind": "phone", "spans": {}}
+{"text": "Hallo, ich heiße Juna Falk. Bitte helft mir.", "language": "de", "kind": "name", "spans": {"name": ["Juna Falk"]}}
+{"text": "Hallo Juna, ist das Paket schon da?", "language": "de", "kind": "name", "spans": {"name": ["Juna"]}}
+{"text": "Viele Grüße, Nils Dorn", "language": "de", "kind": "name", "spans": {"name": ["Nils Dorn"]}}
+{"text": "Adressieren Sie den Umschlag c/o Frieda Stein.", "language": "de", "kind": "name", "spans": {"name": ["Frieda Stein"]}}
+{"text": "Bitte an Lindenstraße 17 senden.", "language": "de", "kind": "street", "spans": {"street": ["Lindenstraße 17"]}}
+{"text": "Die Anschrift ist Ahornstr. 44a.", "language": "de", "kind": "street", "spans": {"street": ["Ahornstr. 44a"]}}
+{"text": "Bitte liefern Sie an Birkenweg 3.", "language": "de", "kind": "street", "spans": {"street": ["Birkenweg 3"]}}
+{"text": "Das Paket geht an Alten Markt Platz 5.", "language": "de", "kind": "street", "spans": {"street": ["Alten Markt Platz 5"]}}
+{"text": "Die Abholung ist in Finkengasse 8.", "language": "de", "kind": "street", "spans": {"street": ["Finkengasse 8"]}}
+{"text": "Auf dem Etikett steht 10115 Berlin.", "language": "de", "kind": "postcode", "spans": {"postcode": ["10115"]}}
+{"text": "Empfängerort: 20095 Hamburg.", "language": "de", "kind": "postcode", "spans": {"postcode": ["20095"]}}
+{"text": "Telefon für Rückfragen: +49 30 555 0123.", "language": "de", "kind": "phone", "spans": {"phone": ["+49 30 555 0123"]}}
+{"text": "Rufen Sie mich unter 030 555 0199 an.", "language": "de", "kind": "phone", "spans": {"phone": ["030 555 0199"]}}
+{"text": "Schreiben Sie an juna@example.test.", "language": "de", "kind": "email", "spans": {"email": ["juna@example.test"]}}
+{"text": "Testkarte: 3782 822463 10005.", "language": "de", "kind": "card", "spans": {"card": ["3782 822463 10005"]}}
+{"text": "Hallo Berlin, der Verkauf endet am Montag.", "language": "de", "kind": "name", "spans": {}}
+{"text": "Danke, Northwind Apparel", "language": "de", "kind": "name", "spans": {}}
+{"text": "Birkenweg bleibt im Plan sichtbar.", "language": "de", "kind": "street", "spans": {}}
+{"text": "Berlin ist am Mittwoch erreichbar.", "language": "de", "kind": "postcode", "spans": {}}
+{"text": "DHL sendet NW-1003 am Freitag.", "language": "de", "kind": "phone", "spans": {}}
+{"text": "Im November ist UPS schneller.", "language": "de", "kind": "email", "spans": {}}
+{"text": "Olá, meu nome é Lívia Prado. Preciso de ajuda.", "language": "pt", "kind": "name", "spans": {"name": ["Lívia Prado"]}}
+{"text": "Olá Inês, podes verificar a encomenda?", "language": "pt", "kind": "name", "spans": {"name": ["Inês"]}}
+{"text": "Obrigada, Tomás Neves", "language": "pt", "kind": "name", "spans": {"name": ["Tomás Neves"]}}
+{"text": "A etiqueta deve dizer c/o Bia Lobo.", "language": "pt", "kind": "name", "spans": {"name": ["Bia Lobo"]}}
+{"text": "Entregue na rua das Nuvens 7.", "language": "pt", "kind": "street", "spans": {"street": ["rua das Nuvens 7"]}}
+{"text": "O endereço é avenida do Pinhal 124.", "language": "pt", "kind": "street", "spans": {"street": ["avenida do Pinhal 124"]}}
+{"text": "A etiqueta diz via dei Gelsi 32, na Itália.", "language": "pt", "kind": "street", "spans": {"street": ["via dei Gelsi 32"]}}
+{"text": "A morada termina em 1000-001 Lisboa.", "language": "pt", "kind": "postcode", "spans": {"postcode": ["1000-001"]}}
+{"text": "A etiqueta tem 4000-008 Porto.", "language": "pt", "kind": "postcode", "spans": {"postcode": ["4000-008"]}}
+{"text": "Liga para +351 910 234 567.", "language": "pt", "kind": "phone", "spans": {"phone": ["+351 910 234 567"]}}
+{"text": "O contacto é 910 234 568.", "language": "pt", "kind": "phone", "spans": {"phone": ["910 234 568"]}}
+{"text": "Envie para livia@example.test.", "language": "pt", "kind": "email", "spans": {"email": ["livia@example.test"]}}
+{"text": "Cartão de teste: 6011-1111-1111-1117.", "language": "pt", "kind": "card", "spans": {"card": ["6011-1111-1111-1117"]}}
+{"text": "Olá Lisboa, há entregas na sexta-feira.", "language": "pt", "kind": "name", "spans": {}}
+{"text": "Obrigado, UPS", "language": "pt", "kind": "name", "spans": {}}
+{"text": "A loja vende o modelo Via Coat.", "language": "pt", "kind": "street", "spans": {}}
+{"text": "Lisboa e Porto ficam na lista.", "language": "pt", "kind": "postcode", "spans": {}}
+{"text": "O pedido NW-1003 segue por DHL.", "language": "pt", "kind": "phone", "spans": {}}
+{"text": "O SKU CAP-1003 é o novo modelo.", "language": "pt", "kind": "card", "spans": {}}
+{"text": "A loja abre em maio.", "language": "pt", "kind": "email", "spans": {}}

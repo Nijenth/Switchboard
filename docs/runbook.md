@@ -186,11 +186,12 @@ disabled. See ADR 0011.
 - Use synthetic cases only. Run each twice, report agreement, and keep Langfuse disabled.
   Real customer data requires the stronger redactor and its independent recall check.
 
-Before real customer data, add a local multilingual PII detector with person-name recognition
-and locale-specific address parsing. Combine it with the existing pattern and known-contact
-checks, and evaluate recall on independently labeled multilingual messages. Hold content for
-review when the detector is unavailable or uncertain. The current fixtures track name and
-address misses by case ID and category without printing the spans.
+The local rules cover name cues, street formats and postcodes in addition to
+known sender names and structured PII. Run `python -m pytest -qs tests/test_pii_probes.py`
+from `services/core` when changing the rules. The offline pack eval also fails
+on any of its inherited synthetic PII misses. Diagnose misses using case IDs
+and kinds instead of printing the spans. See [ADR 0028](adr/0028-rules-based-pii-redaction.md)
+for the measured results and the independent evaluation needed before real data.
 
 Prototype Microsoft Presidio with locally installed language-specific NER models and custom
 address candidate recognizers. Use libpostal to parse the candidate spans, including

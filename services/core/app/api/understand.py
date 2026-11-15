@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from app.adapters.ai import OfflineGateway, Provider
 from app.adapters.ingest import audit
 from app.ai_accounting import Accounting, set_scope
+from app.guardrails import redact_text
 from app.understanding import understand
 
 DEFAULT_RERUN_KEY = UUID(int=0)
@@ -119,6 +120,8 @@ def understand_router(
                         raise HTTPException(409, "Understanding already claimed")
                     replay: dict[str, Any] = cached[0]
                     return replay
+            # Older messages may have been stored by a less capable redactor.
+            redacted = redact_text(redacted)
             accounting = Accounting(
                 pool,
                 gateway,
