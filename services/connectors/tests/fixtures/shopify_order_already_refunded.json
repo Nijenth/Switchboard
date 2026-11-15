@@ -1,0 +1,42 @@
+{
+  "data": {
+    "orders": {
+      "nodes": [
+        {
+          "id": "gid://shopify/Order/5001",
+          "name": "#NW-1003",
+          "refunds": [
+            {
+              "id": "gid://shopify/Refund/9001",
+              "note": "Switchboard refund switchboard:key-1",
+              "transactions": {
+                "nodes": [
+                  {
+                    "status": "SUCCESS"
+                  }
+                ],
+                "pageInfo": {
+                  "hasNextPage": false
+                }
+              }
+            }
+          ],
+          "transactions": [
+            {
+              "id": "gid://shopify/OrderTransaction/7001",
+              "kind": "SALE",
+              "status": "SUCCESS",
+              "gateway": "bogus",
+              "amountSet": {
+                "shopMoney": {
+                  "amount": "210.00",
+                  "currencyCode": "EUR"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

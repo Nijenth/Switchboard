@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Switchboard: case study, blueprint and architecture</title>
+<style>
+  @page { size: A4; margin: 17mm 16mm 18mm 16mm; }
+  @page :first { margin: 0; }
+  :root {
+    --ink: #17202e; --muted: #5a6577; --line: #d5dbe5; --soft: #f3f5f9;
+    --navy: #14213d; --teal: #0f766e; --teal-soft: #e3f3f0;
+    --amber: #a85b00; --amber-soft: #fdf1df; --red: #a4262c; --red-soft: #fbe9ea;
+    --blue: #1d4f91; --blue-soft: #e6eefa;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { margin: 0; font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: var(--ink);
+         font-size: 10.2pt; line-height: 1.5; }
+  h1, h2, h3 { color: var(--navy); line-height: 1.2; margin: 0; }
+  h2 { font-size: 19pt; margin: 0 0 3mm; padding-top: 1mm; break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 6mm 0 2mm; break-after: avoid; }
+  p { margin: 0 0 3mm; }
+  ul, ol { margin: 0 0 3mm; padding-left: 5.5mm; }
+  li { margin-bottom: 1.2mm; }
+  code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 9pt; background: var(--soft);
+         padding: 0 1mm; border-radius: 1mm; }
+  section { margin-top: 10mm; }
+  section.newpage { break-before: page; margin-top: 0; }
+  .kicker { font-size: 8.5pt; letter-spacing: .14em; text-transform: uppercase; color: var(--teal);
+            font-weight: 600; margin-bottom: 1.5mm; }
+  .lead { font-size: 11.5pt; color: #2b3647; max-width: 160mm; }
+  .muted { color: var(--muted); }
+  .small { font-size: 8.8pt; }
+
+  /* cover */
+  .cover { break-before: auto; height: 297mm; padding: 34mm 22mm 20mm; background: var(--navy); color: #fff;
+           display: flex; flex-direction: column; }
+  .cover .kicker { color: #7fd6c9; }
+  .cover h1 { color: #fff; font-size: 44pt; letter-spacing: -.01em; margin: 4mm 0 5mm; }
+  .cover .sub { font-size: 16pt; line-height: 1.35; color: #d7deea; max-width: 140mm; }
+  .cover .parts { margin-top: 16mm; display: grid; grid-template-columns: repeat(3, 1fr); gap: 5mm; }
+  .cover .part { border-top: 1px solid #45557a; padding-top: 3mm; font-size: 10pt; color: #c3cde0; }
+  .cover .part b { display: block; color: #fff; font-size: 12pt; margin-bottom: 1mm; }
+  .cover .foot { margin-top: auto; font-size: 9.5pt; color: #aab6cd; border-top: 1px solid #45557a; padding-top: 4mm; }
+
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin: 4mm 0 2mm; }
+  .tile { border: 1px solid var(--line); border-radius: 2mm; padding: 3mm 3.5mm; break-inside: avoid; }
+  .tile b { display: block; font-size: 20pt; color: var(--navy); line-height: 1.1; }
+  .tile span { font-size: 8.6pt; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; margin: 2mm 0 4mm; font-size: 9.2pt; }
+  tr { break-inside: avoid; }
+  header.sh { break-inside: avoid; break-after: avoid; }
+  th { text-align: left; background: var(--soft); color: var(--navy); font-weight: 600; }
+  th, td { border: 1px solid var(--line); padding: 1.8mm 2.4mm; vertical-align: top; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; }
+  .box { border: 1px solid var(--line); border-radius: 2mm; padding: 3.5mm 4mm; break-inside: avoid; }
+  .box h3 { margin-top: 0; }
+  .note { background: var(--amber-soft); border-left: 3px solid var(--amber); padding: 2.5mm 3.5mm;
+          margin: 3mm 0 4mm; font-size: 9.4pt; break-inside: avoid; }
+  figure { margin: 3mm 0 4mm; break-inside: avoid; }
+  figcaption { font-size: 8.8pt; color: var(--muted); margin-top: 1.5mm; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: "Segoe UI", Arial, sans-serif; }
+
+  .steps { list-style: none; padding: 0; margin: 2mm 0 4mm; }
+  .steps li { display: grid; grid-template-columns: 7mm 22mm 1fr; gap: 3.5mm; align-items: start;
+              padding: 2mm 0; border-bottom: 1px solid var(--line); margin: 0; break-inside: avoid; }
+  .steps .n { font-weight: 700; color: var(--teal); }
+  .chip { display: inline-block; font-size: 8pt; font-weight: 600; padding: .4mm 2mm; border-radius: 3mm;
+          text-align: center; white-space: nowrap; }
+  .c-core { background: var(--teal-soft); color: var(--teal); }
+  .c-n8n { background: var(--blue-soft); color: var(--blue); }
+  .c-human { background: var(--amber-soft); color: var(--amber); }
+  .c-db { background: #ece8f7; color: #4b3a8f; }
+  .st { font-size: 8pt; font-weight: 600; padding: .3mm 1.8mm; border-radius: 3mm; white-space: nowrap; }
+  .st-done { background: var(--teal-soft); color: var(--teal); }
+  .st-review { background: var(--blue-soft); color: var(--blue); }
+  .st-off { background: var(--red-soft); color: var(--red); }
+  .st-todo { background: var(--soft); color: var(--muted); }
+  pre { font-family: Consolas, "Cascadia Mono", monospace; font-size: 8.3pt; line-height: 1.4; background: var(--soft);
+        border: 1px solid var(--line); border-radius: 2mm; padding: 3mm 3.5mm; margin: 2mm 0 4mm;
+        white-space: pre-wrap; break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="kicker">Case study · Blueprint · Architecture</div>
+  <h1>Switchboard</h1>
+  <div class="sub">A multi-tenant AI operations engine that reads incoming work, proposes actions,
+    and only acts when the rules or a person allow it.</div>
+  <div class="parts">
+    <div class="part"><b>Case study</b>The problem, the approach, a worked example and the evidence so far.</div>
+    <div class="part"><b>Architecture</b>The pipeline, who owns what, and how an action is executed exactly once.</div>
+    <div class="part"><b>Blueprint</b>Packs, repository layout, the six build phases and what remains.</div>
+  </div>
+  <div class="foot">Status as of 15 November 2026 · Demo tenant: Northwind Apparel (fictional) ·
+    Everything described here runs on mock adapters and a fake model. No real provider has been called.</div>
+</div>
+
+<!-- ───────────── 1 summary ───────────── -->
+<section class="newpage">
+  <header class="sh">
+  <div class="kicker">1 · Summary</div>
+  <h2>What we are building, in one page</h2>
+  </header>
+  <p class="lead">Businesses want AI to handle support emails, sales leads and supplier invoices. The risk is not that
+    the model writes a poor sentence. The risk is that it refunds the wrong order, emails a customer something
+    untrue, or leaks one customer's data to another. Switchboard is built so those outcomes are refused by the
+    system, not merely discouraged by a prompt.</p>
+
+  <div class="cols">
+    <div class="box">
+      <h3>The idea</h3>
+      <ul>
+        <li><b>The model proposes.</b> It classifies, extracts and drafts. Its output is data.</li>
+        <li><b>The policy engine decides.</b> Fixed safety rules, then the use case's rules, then the customer's
+          stricter rules.</li>
+        <li><b>A person approves</b> anything involving money or low confidence, in Slack, within a deadline.</li>
+        <li><b>The database enforces</b> the result and keeps a tamper-evident record.</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>The shape</h3>
+      <ul>
+        <li><b>One generic engine.</b> Each use case is a <i>pack</i>: a folder of configuration.</li>
+        <li><b>n8n is the hands.</b> Triggers, sequencing, retries, connectors.</li>
+        <li><b>A small core service is the brain and the ledger.</b> It makes every decision and is the only
+          writer of engine data.</li>
+        <li><b>Three launch packs:</b> customer support, lead qualification, invoice processing.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Where it stands</h3>
+  <div class="tiles">
+    <div class="tile"><b>1 of 3</b><span>packs working end to end on mock data (customer support)</span></div>
+    <div class="tile"><b>293</b><span>database safety checks passing, 0 failing</span></div>
+    <div class="tile"><b>208</b><span>core tests passing with n8n in the loop, plus 80 gateway tests</span></div>
+    <div class="tile"><b>0</b><span>real provider calls made; real dispatch is switched off in core</span></div>
+  </div>
+  <p class="small muted">Counts were observed on the local Windows machine on 15 November 2026, on the newest
+    build branch. They have not been run on hosted CI for that branch. See section 8 for what each number proves.</p>
+
+  <table>
+    <tr><th style="width:27%">Pack</th><th style="width:21%">Input</th><th>Typical outcome</th><th style="width:19%">State</th></tr>
+    <tr><td><code>ecommerce_support</code></td><td>Email, web chat</td><td>Order status reply, refund proposal, escalation</td>
+        <td><span class="st st-done">Working on mocks</span></td></tr>
+    <tr><td><code>sales_leads</code></td><td>Web form, email</td><td>Lead scored, CRM updated, meeting booked, sales alerted</td>
+        <td><span class="st st-todo">Skeleton only</span></td></tr>
+    <tr><td><code>invoice_processing</code></td><td>Email with PDF</td><td>Fields extracted, matched to a purchase order, posted or sent for finance approval</td>
+        <td><span class="st st-todo">Skeleton only</span></td></tr>
+  </table>
+</section>
+
+<!-- ───────────── 2 problem ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">2 · Case study</div>
+  <h2>The problem and the approach</h2>
+  </header>
+
+  <h3>What goes wrong with "just add an AI agent"</h3>
+  <table>
+    <tr><th style="width:34%">Failure</th><th>How Switchboard prevents it</th></tr>
+    <tr><td>The model is tricked by text in an email or a PDF</td>
+        <td>All external content is wrapped as untrusted data. An injection flag escalates the case to a person.
+            Nothing the model writes can grant a tool, change a threshold or skip an approval.</td></tr>
+    <tr><td>The AI issues a refund or payment on its own</td>
+        <td>Every money tool always needs approval by the required role. The database refuses to execute a money
+            action that has no approver.</td></tr>
+    <tr><td>A reply states something that is not true</td>
+        <td>Outbound text must cite a knowledge passage or a tool result. An uncited draft goes to a person.</td></tr>
+    <tr><td>Order details are sent to someone who is not the customer</td>
+        <td>Tools that need a verified identity return nothing until identity is verified. The only allowed output
+            is a request to verify.</td></tr>
+    <tr><td>A crash causes a double refund</td>
+        <td>Each action is claimed by one worker under a lease. An action whose outcome is unknown can never be
+            retried blindly; the system first looks for the effect.</td></tr>
+    <tr><td>One customer's data appears in another's case</td>
+        <td>Three layers: composite foreign keys, row-level security that returns zero rows without a tenant
+            context, and tenant filters in every query.</td></tr>
+    <tr><td>Nobody can explain afterwards why something happened</td>
+        <td>Every decision records the rule that fired and a snapshot of its inputs. The audit log is append-only
+            and hash-chained, and is checked against a checkpoint stored outside the database.</td></tr>
+  </table>
+
+  <h3>A worked example: a refund request</h3>
+  <p>A customer of Northwind Apparel emails to ask for a refund on an order. This is the path the demo runs today,
+    on mock shop data.</p>
+  <ol class="steps">
+    <li><span class="n">1</span><span class="chip c-n8n">n8n</span><span>Receives the email through a signed webhook and posts it to the core service.</span></li>
+    <li><span class="n">2</span><span class="chip c-core">Core</span><span>Creates the case once (a repeated delivery is recognised and ignored), redacts personal data, checks for prompt injection.</span></li>
+    <li><span class="n">3</span><span class="chip c-core">Core</span><span>Classifies the message as a refund request and extracts the order number, with a confidence for each field.</span></li>
+    <li><span class="n">4</span><span class="chip c-n8n">n8n</span><span>Runs the read-only lookups core proposes: identity check first, then the order and its refund eligibility.</span></li>
+    <li><span class="n">5</span><span class="chip c-core">Core</span><span>Runs the policy engine. A refund is a money tool, so the decision is <code>needs_approval</code>. A refund action and a reply draft are created as proposals.</span></li>
+    <li><span class="n">6</span><span class="chip c-human">Manager</span><span>Sees the request in Slack with the amount, the reason and the draft, and approves it before the deadline. Core verifies the Slack signature and the reviewer's role.</span></li>
+    <li><span class="n">7</span><span class="chip c-n8n">n8n</span><span>Claims the approved action. Core hands out one single-use grant. n8n performs the refund in the mock shop and reports the reference back.</span></li>
+    <li><span class="n">8</span><span class="chip c-db">Ledger</span><span>The decision, approval, execution and reply are in the audit log under one trace ID.</span></li>
+  </ol>
+  <p>If the reviewer does nothing, the SLA watchdog escalates. If the worker dies between the refund and the
+    report, the reconciler finds the refund by its idempotency key and records the true outcome.</p>
+</section>
+
+<!-- ───────────── 3 pipeline ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">3 · Architecture</div>
+  <h2>The pipeline</h2>
+  </header>
+  <p>Every piece of incoming work, whatever the channel or use case, passes through the same ten stages.</p>
+
+  <figure>
+    <svg viewBox="0 0 720 250" role="img" aria-label="Ten-stage pipeline from ingest to record">
+      <defs>
+        <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0L10 5L0 10z" fill="#5a6577"/></marker>
+      </defs>
+      <g font-size="12">
+        <!-- row 1 -->
+        <g fill="#e6eefa" stroke="#1d4f91"><rect x="8" y="14" width="128" height="78" rx="6"/></g>
+        <g fill="#e3f3f0" stroke="#0f766e">
+          <rect x="152" y="14" width="128" height="78" rx="6"/><rect x="296" y="14" width="128" height="78" rx="6"/>
+          <rect x="440" y="14" width="128" height="78" rx="6"/><rect x="584" y="14" width="128" height="78" rx="6"/>
+        </g>
+        <!-- row 2 -->
+        <g fill="#e3f3f0" stroke="#0f766e"><rect x="584" y="150" width="128" height="78" rx="6"/><rect x="296" y="150" width="128" height="78" rx="6"/><rect x="8" y="150" width="128" height="78" rx="6"/></g>
+        <g fill="#e6eefa" stroke="#1d4f91"><rect x="440" y="150" width="128" height="78" rx="6"/></g>
+        <g fill="#fdf1df" stroke="#a85b00"><rect x="152" y="150" width="128" height="78" rx="6"/></g>
+
+        <g font-weight="700" fill="#14213d" text-anchor="middle" font-size="12.5">
+          <text x="72" y="36">1 Ingest</text><text x="216" y="36">2 Route</text><text x="360" y="36">3 Guard in</text>
+          <text x="504" y="36">4 Understand</text><text x="648" y="36">5 Retrieve</text>
+          <text x="648" y="172">6 Decide</text><text x="504" y="172">7 Act</text><text x="360" y="172">8 Guard out</text>
+          <text x="216" y="172">9 Approve</text><text x="72" y="172">10 Record</text>
+        </g>
+        <g fill="#3b475a" text-anchor="middle" font-size="9.6">
+          <text x="72" y="53">normalise, dedupe,</text><text x="72" y="66">store files,</text><text x="72" y="79">open a case</text>
+          <text x="216" y="53">channel endpoint</text><text x="216" y="66">picks the pack</text>
+          <text x="360" y="53">redact personal data,</text><text x="360" y="66">injection check,</text><text x="360" y="79">language</text>
+          <text x="504" y="53">classify intent,</text><text x="504" y="66">extract fields with</text><text x="504" y="79">confidence</text>
+          <text x="648" y="53">knowledge search,</text><text x="648" y="66">read-only lookups</text>
+          <text x="648" y="189">policy engine:</text><text x="648" y="202">global, pack,</text><text x="648" y="215">tenant rules</text>
+          <text x="504" y="189">tool calls under</text><text x="504" y="202">a grant; drafts for</text><text x="504" y="215">outbound text</text>
+          <text x="360" y="189">grounded? within</text><text x="360" y="202">policy? no leak?</text><text x="360" y="215">tone?</text>
+          <text x="216" y="189">Slack request</text><text x="216" y="202">with a deadline</text>
+          <text x="72" y="189">audit log, AI runs,</text><text x="72" y="202">metrics, trace</text>
+        </g>
+        <g stroke="#5a6577" stroke-width="1.4" fill="none" marker-end="url(#a)">
+          <path d="M136 53H150"/><path d="M280 53H294"/><path d="M424 53H438"/><path d="M568 53H582"/>
+          <path d="M648 92V148"/>
+          <path d="M584 189H570"/><path d="M440 189H426"/><path d="M296 189H282"/><path d="M152 189H138"/>
+        </g>
+      </g>
+    </svg>
+    <figcaption>Green: decided and recorded by the core service. Blue: carried out by n8n under core's control.
+      Amber: a person. One <code>trace_id</code> is created at stage 1 and carried through every stage.</figcaption>
+  </figure>
+
+  <h3>How a decision is made (stage 6)</h3>
+  <p>There are four possible decisions: <code>auto</code>, <code>needs_approval</code>, <code>escalate</code> and
+    <code>ignore</code>. Rules are evaluated in three tiers. A later tier can only make the result stricter. If
+    nothing matches, the answer is <code>needs_approval</code>.</p>
+  <table>
+    <tr><th style="width:20%">Tier</th><th>What it contains</th><th style="width:27%">Who can change it</th></tr>
+    <tr><td>1 Global safety</td><td>Eight fixed rules, listed below</td><td>Engine code only</td></tr>
+    <tr><td>2 Pack rules</td><td>The use case's business rules, written as data in <code>rules.yaml</code></td><td>Git, CI, then the pack loader</td></tr>
+    <tr><td>3 Tenant overrides</td><td>A customer's own stricter rules</td><td>Tenant configuration; tighten only</td></tr>
+  </table>
+  <table>
+    <tr><th style="width:8%">Rule</th><th>Trigger</th><th style="width:30%">Result</th></tr>
+    <tr><td>G1</td><td>Prompt injection, legal threat, chargeback, safety or harassment flag</td><td>Escalate, urgent</td></tr>
+    <tr><td>G2</td><td>A tool needs a verified identity and identity is not verified</td><td>Ask for verification only; no tool data in any output</td></tr>
+    <tr><td>G3</td><td>Any money tool</td><td>Needs approval by the required role</td></tr>
+    <tr><td>G4</td><td>Classification confidence below the pack's threshold</td><td>Needs approval</td></tr>
+    <tr><td>G5</td><td>A required extracted field is below its threshold or fails validation</td><td>Needs approval</td></tr>
+    <tr><td>G6</td><td>Outbound text with no citation</td><td>Needs approval</td></tr>
+    <tr><td>G7</td><td>Output check fails: personal data leak, promise beyond policy, tone</td><td>Needs approval</td></tr>
+    <tr><td>G8</td><td>Tenant's monthly AI budget is used up</td><td>Needs approval, no further model calls</td></tr>
+  </table>
+</section>
+
+<!-- ───────────── 4 components ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">4 · Architecture</div>
+  <h2>Who owns what</h2>
+  </header>
+  <p>Switchboard is an n8n-based platform, not a replacement for n8n. The core service exists only for what a
+    workflow tool should not be trusted with: deciding, authorising and recording.</p>
+
+  <figure>
+    <svg viewBox="0 0 720 400" role="img" aria-label="System components and the connections allowed between them">
+      <g font-size="11">
+        <!-- inputs -->
+        <rect x="8" y="150" width="112" height="96" rx="6" fill="#f3f5f9" stroke="#8a94a6"/>
+        <text x="64" y="170" text-anchor="middle" font-weight="700" fill="#14213d">Inputs</text>
+        <g fill="#3b475a" text-anchor="middle" font-size="9.6"><text x="64" y="187">email, web chat,</text><text x="64" y="200">web form, API</text><text x="64" y="218">signed webhooks,</text><text x="64" y="231">rate limits</text></g>
+
+        <!-- gateway -->
+        <rect x="160" y="22" width="176" height="66" rx="6" fill="#fbe9ea" stroke="#a4262c" stroke-dasharray="5 3"/>
+        <text x="248" y="42" text-anchor="middle" font-weight="700" fill="#14213d">Connector gateway</text>
+        <g fill="#3b475a" text-anchor="middle" font-size="9.6"><text x="248" y="58">holds Shopify and Gmail write</text><text x="248" y="71">credentials · real dispatch off</text></g>
+
+        <!-- n8n -->
+        <rect x="160" y="130" width="176" height="136" rx="6" fill="#e6eefa" stroke="#1d4f91"/>
+        <text x="248" y="152" text-anchor="middle" font-weight="700" fill="#14213d" font-size="12.5">n8n · the hands</text>
+        <g fill="#3b475a" text-anchor="middle" font-size="9.6"><text x="248" y="171">triggers and schedules</text><text x="248" y="185">step sequencing and retries</text><text x="248" y="199">Slack buttons, SLA timers</text><text x="248" y="213">mock tool sub-workflows</text><text x="248" y="235" font-style="italic">queue mode: main + workers + Redis</text><text x="248" y="251" font-weight="700" fill="#1d4f91">never decides</text></g>
+
+        <!-- slack -->
+        <rect x="160" y="312" width="176" height="56" rx="6" fill="#fdf1df" stroke="#a85b00"/>
+        <text x="248" y="334" text-anchor="middle" font-weight="700" fill="#14213d">Slack</text>
+        <text x="248" y="351" text-anchor="middle" fill="#3b475a" font-size="9.6">human approvals with a deadline</text>
+
+        <!-- core -->
+        <rect x="408" y="30" width="186" height="146" rx="6" fill="#e3f3f0" stroke="#0f766e"/>
+        <text x="501" y="52" text-anchor="middle" font-weight="700" fill="#14213d" font-size="12.5">Core service</text>
+        <text x="501" y="67" text-anchor="middle" fill="#0f766e" font-size="10" font-weight="700">the brain + the ledger</text>
+        <g fill="#3b475a" text-anchor="middle" font-size="9.6"><text x="501" y="86">pack loading and validation</text><text x="501" y="100">all AI calls and guardrails</text><text x="501" y="114">policy engine</text><text x="501" y="128">claim, grant, completion</text><text x="501" y="142">audit log, metrics, evals</text><text x="501" y="162" font-weight="700" fill="#0f766e">sole writer of engine tables</text></g>
+
+        <!-- side services -->
+        <rect x="630" y="38" width="82" height="50" rx="6" fill="#f3f5f9" stroke="#8a94a6"/>
+        <text x="671" y="59" text-anchor="middle" font-weight="700" fill="#14213d">LiteLLM</text><text x="671" y="74" text-anchor="middle" fill="#3b475a" font-size="9.2">AI gateway</text>
+        <rect x="630" y="112" width="82" height="50" rx="6" fill="#f3f5f9" stroke="#8a94a6"/>
+        <text x="671" y="133" text-anchor="middle" font-weight="700" fill="#14213d">MinIO</text><text x="671" y="148" text-anchor="middle" fill="#3b475a" font-size="9.2">private files</text>
+
+        <!-- postgres -->
+        <rect x="396" y="232" width="316" height="150" rx="6" fill="#fafbfd" stroke="#4b3a8f"/>
+        <text x="408" y="253" font-weight="700" fill="#14213d" font-size="12">PostgreSQL + pgvector</text><text x="700" y="253" text-anchor="end" fill="#3b475a" font-size="10">system of record</text>
+        <rect x="408" y="266" width="92" height="104" rx="5" fill="#f3f5f9" stroke="#8a94a6"/>
+        <rect x="512" y="266" width="92" height="104" rx="5" fill="#ece8f7" stroke="#4b3a8f"/>
+        <rect x="616" y="266" width="84" height="104" rx="5" fill="#f3f5f9" stroke="#8a94a6"/>
+        <g text-anchor="middle" font-weight="700" fill="#14213d"><text x="454" y="286">demo schema</text><text x="558" y="286">public schema</text><text x="658" y="286">n8n database</text></g>
+        <g text-anchor="middle" fill="#3b475a" font-size="9.2">
+          <text x="454" y="304">mock shop, CRM,</text><text x="454" y="317">accounting,</text><text x="454" y="330">calendar</text><text x="454" y="352" font-style="italic">app_n8n_mock</text>
+          <text x="558" y="304">the engine: cases,</text><text x="558" y="317">decisions, actions,</text><text x="558" y="330">approvals, audit</text><text x="558" y="352" font-style="italic">app_core</text>
+          <text x="658" y="304">n8n's own</text><text x="658" y="317">internal state,</text><text x="658" y="330">kept separate</text>
+        </g>
+
+        <!-- arrows -->
+        <g stroke="#5a6577" stroke-width="1.4" fill="none" marker-end="url(#a)">
+          <path d="M120 198H158"/>
+          <path d="M336 170L406 120"/>
+          <path d="M336 244L406 300"/>
+          <path d="M558 176V264"/>
+          <path d="M594 63H628"/><path d="M594 137H628"/>
+          <path d="M248 266V310" marker-start="url(#a)"/>
+        </g>
+        <g stroke="#a4262c" stroke-width="1.4" fill="none" stroke-dasharray="5 3" marker-end="url(#a)">
+          <path d="M248 130V90"/><path d="M336 56L406 66"/>
+        </g>
+        <g font-size="9.2" fill="#14213d" font-weight="600">
+          <text x="404" y="189" text-anchor="end">core API only</text>
+          <text x="318" y="290">demo only</text>
+          <text x="254" y="113" fill="#a4262c">action ID only</text>
+          <text x="344" y="84" fill="#a4262c">claims grant</text>
+        </g>
+      </g>
+    </svg>
+    <figcaption>Solid arrows are the only connections that exist. n8n has no route to the engine tables: its
+      database login can see the <code>demo</code> schema and nothing else. Dashed red: built and tested against a
+      stub, but core still refuses real dispatch.</figcaption>
+  </figure>
+
+  <h3>Database logins: least privilege, enforced by the database</h3>
+  <table>
+    <tr><th style="width:22%">Login</th><th style="width:22%">Used by</th><th>Can</th><th>Cannot</th></tr>
+    <tr><td><code>app_core</code></td><td>Core service</td><td>Read configuration; read, insert and update operational tables; insert audit entries</td><td>Change packs, tools or approval roles; edit or delete audit; delete anything</td></tr>
+    <tr><td><code>app_config_loader</code></td><td>Pack loader</td><td>Write packs, tools, tenant configuration, knowledge, eval cases</td><td>Touch cases, messages, actions, approvals</td></tr>
+    <tr><td><code>app_n8n_mock</code></td><td>n8n mock tools</td><td>Read and write the <code>demo</code> schema</td><td>Read any engine table</td></tr>
+    <tr><td><code>app_reporting</code></td><td>Dashboards</td><td>Read reporting views</td><td>Read raw tables</td></tr>
+  </table>
+  <p>The consequence: <b>the AI path cannot change its own permissions.</b> Which tools exist, how risky they are and
+    who must approve them change only through Git, CI and the pack loader.</p>
+</section>
+
+<!-- ───────────── 5 execution ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">5 · Architecture</div>
+  <h2>Executing an action exactly once</h2>
+  </header>
+  <p>The hardest part of letting software act is the moment between "the refund was sent" and "we recorded that the
+    refund was sent". The protocol below makes a crash in that gap safe.</p>
+
+  <ol class="steps">
+    <li><span class="n">1</span><span class="chip c-core">Core</span><span><code>/decide</code> creates action rows as <code>proposed</code> or <code>pending_approval</code>. Nothing else can create an action.</span></li>
+    <li><span class="n">2</span><span class="chip c-human">Reviewer</span><span>Approves in Slack. Core checks the Slack signature, the reviewer's role, the deadline and that the approved content is exactly what was shown.</span></li>
+    <li><span class="n">3</span><span class="chip c-n8n">n8n</span><span>Calls <code>/actions/{id}/claim</code>. Core atomically sets the action to <code>executing</code> with a worker ID and a lease. Only one claimer can win. It returns a single-use execution grant.</span></li>
+    <li><span class="n">4</span><span class="chip c-n8n">n8n</span><span>Consumes the grant to receive the approved payload from core, then calls the external system, passing the action's idempotency key.</span></li>
+    <li><span class="n">5</span><span class="chip c-n8n">n8n</span><span>Calls <code>/actions/{id}/complete</code> with the external reference. Core records <code>executed</code> or <code>failed</code>.</span></li>
+    <li><span class="n">6</span><span class="chip c-db">Reconciler</span><span>If the worker crashes between 4 and 5, the lease expires and the action becomes <code>unknown_outcome</code>. The reconciler looks the effect up in the external system and records what it finds.</span></li>
+  </ol>
+  <div class="note"><b>The rule that matters most:</b> an action in <code>unknown_outcome</code> can never be retried
+    blindly. This is enforced in the database, not just in application code.</div>
+
+  <h3>Tool risk levels</h3>
+  <table>
+    <tr><th style="width:18%">Level</th><th>Meaning</th><th style="width:42%">When it may run</th></tr>
+    <tr><td><code>read</code></td><td>Looks data up, changes nothing</td><td>Without approval</td></tr>
+    <tr><td><code>write</code></td><td>Creates or updates records</td><td>Only if the decision is <code>auto</code> and a pack rule allows the tool</td></tr>
+    <tr><td><code>external_comm</code></td><td>Sends something outside the company</td><td>Only with a draft authorised for that exact text</td></tr>
+    <tr><td><code>money</code></td><td>Refunds, payments, discounts</td><td>Always needs an approver in the required role</td></tr>
+  </table>
+
+  <h3>Release gate 3: where the real credentials live</h3>
+  <p>Before any real connector runs, the grant must be enforced in the place that holds the provider credentials.
+    If n8n held the Shopify and Gmail credentials, the grant check would be a convention inside a workflow, and an
+    edited workflow could refund an order without one. The owner chose a separate <b>connector gateway</b>
+    (ADR 0032):</p>
+  <ul>
+    <li>n8n sends the gateway only an action ID. The gateway claims and consumes the grant itself, so the approved
+      payload comes from core and never from n8n.</li>
+    <li>It refuses unless the grant is for the real adapter, the tool has a registered connector, it holds a
+      credential for that tenant and destination, and enough of the lease remains.</li>
+    <li>It searches the provider for an earlier effect of the same idempotency key, and writes once only if none
+      exists. A write whose result is unclear is never retried and never marked complete.</li>
+  </ul>
+  <p><span class="st st-off">Real dispatch is off</span> &nbsp;Core answers "refused" for the real adapter and the
+    database functions accept only the mock adapter. Nothing real can execute, even with credentials configured.
+    Turning it on needs its own reviewed migration.</p>
+</section>
+
+<!-- ───────────── 6 packs ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">6 · Blueprint</div>
+  <h2>Packs: a use case is a folder</h2>
+  </header>
+  <p>Adding a use case means adding a pack, not changing the engine. A pack is versioned. Changing anything means
+    a new version, and each tenant pins the version it runs. CI fails if a pack does not validate.</p>
+
+  <div class="cols">
+    <div>
+<pre>packs/&lt;pack_key&gt;/
+  pack.yaml        identity, channels, intents,
+                   confidence thresholds
+  schemas/*.json   what to extract, and the
+                   shape of outputs
+  tools.yaml       tools this pack may use and
+                   who must approve them
+  rules.yaml       business rules, as data
+  prompts/*.md     versioned prompts
+  knowledge/*.md   policies, FAQs, price lists
+  evals/cases.jsonl  golden test cases
+  README.md        what it does, demo script</pre>
+    </div>
+    <div>
+<pre>- id: INV_NO_PO
+  when: { field: checks.po_found,
+          op: eq, value: false }
+  then: { decision: needs_approval,
+          role: finance,
+          reason: "No matching purchase order" }
+
+- id: INV_CLEAN_MATCH
+  when:
+    all:
+      - { field: checks.po_found,
+          op: eq, value: true }
+      - { field: checks.po_variance_pct,
+          op: lte, value: 2 }
+  then: { decision: auto,
+          allow_tools:
+            [invoice_post_to_accounting] }</pre>
+    </div>
+  </div>
+  <p>Rules are data, evaluated by a small safe condition language (<code>all</code>, <code>any</code>,
+    <code>not</code>, and comparisons on named fields). Rule content is never executed as code. Among matching pack
+    rules, <code>escalate</code> outranks <code>needs_approval</code>, which outranks <code>auto</code>. Missing
+    data can only make the result stricter.</p>
+
+  <h3>Technology choices</h3>
+  <table>
+    <tr><th style="width:24%">Concern</th><th>Choice</th><th style="width:24%">Concern</th><th>Choice</th></tr>
+    <tr><td>Orchestration</td><td>n8n, self-hosted, queue mode</td><td>AI gateway</td><td>LiteLLM: fallback models, budgets, cost tracking</td></tr>
+    <tr><td>Core service</td><td>Python 3.12, FastAPI, Pydantic</td><td>Approvals</td><td>Slack interactive messages</td></tr>
+    <tr><td>Database</td><td>PostgreSQL 16 with pgvector</td><td>Tracing, dashboards</td><td>Langfuse, Metabase on reporting views</td></tr>
+    <tr><td>Queue, files</td><td>Redis 7, MinIO (S3-compatible)</td><td>Planned integrations</td><td>Shopify, Gmail, HubSpot, Cal.com, QuickBooks or Xero</td></tr>
+    <tr><td>CI</td><td>GitHub Actions: lint, types, tests, pack validation, eval gates</td><td>Demo deployment</td><td>One VPS, Docker Compose, Caddy</td></tr>
+  </table>
+
+  <h3>Repository layout</h3>
+<pre>db/migrations/        forward-only SQL (28 files so far); an applied file is never edited
+db/tests/             executable database invariant tests
+packs/                one folder per use case and version
+services/core/app/    api · engine (pure logic) · guardrails · tools · extraction · adapters
+services/core/harness/  disposable live demo stack and local console (never imported by app)
+services/connectors/  the connector gateway
+workflows/            exported n8n workflows, credentials stripped (15 so far)
+evals/                eval runner and document fixtures
+docs/adr/             32 decision records; every new table, service, tool or dependency needs one</pre>
+</section>
+
+<!-- ───────────── 7 phases ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">7 · Blueprint</div>
+  <h2>Build plan and progress</h2>
+  </header>
+  <p>The engine is designed generically, but one pack is finished completely before the next begins. Each phase
+    ends with something that can be demonstrated.</p>
+
+  <table>
+    <tr><th style="width:5%">#</th><th style="width:22%">Phase</th><th>Scope</th><th style="width:24%">State</th></tr>
+    <tr><td>1</td><td>Foundation</td><td>Docker Compose, migrations, database roles, safety checks in CI, pack loader, core skeleton with a secure <code>/ingest</code></td>
+        <td><span class="st st-done">Built</span></td></tr>
+    <tr><td>2</td><td>AI core</td><td>Classification and extraction against pack schemas, redaction, injection detection, AI run records, eval runner</td>
+        <td><span class="st st-done">Built</span><br><span class="small muted">Tested with a fake model. Real model quality is not measured.</span></td></tr>
+    <tr><td>3</td><td>Pack 1: customer support</td><td>n8n ingest, case pipeline and approval workflows; knowledge search; decision pipeline; cited drafts; claim, complete and reconcile; Slack approvals with an SLA watchdog</td>
+        <td><span class="st st-done">Working on mocks</span><br><span class="small muted">Real Shopify and Gmail not connected.</span></td></tr>
+    <tr><td></td><td>Live demo stack and console</td><td>One command starts a disposable stack; a loopback-only page drives the scripted demo</td>
+        <td><span class="st st-review">Awaiting owner review</span><br><span class="small muted">Two branches, not merged.</span></td></tr>
+    <tr><td></td><td>Release gate 3</td><td>Connector gateway that enforces grants where provider credentials live</td>
+        <td><span class="st st-review">Awaiting owner review</span><br><span class="st st-off">Real dispatch off</span></td></tr>
+    <tr><td>4</td><td>Pack 2: sales leads</td><td>Form and email intake, enrichment, lead scoring, CRM contact and deal, booking link, sales alert</td>
+        <td><span class="st st-todo">Not started</span><br><span class="small muted">Pack skeleton validates.</span></td></tr>
+    <tr><td>5</td><td>Pack 3: invoices</td><td>PDF intake, extraction with per-field confidence, vendor and purchase order matching, duplicate check, finance approval</td>
+        <td><span class="st st-todo">Not started</span><br><span class="small muted">Pack skeleton validates.</span></td></tr>
+    <tr><td>6</td><td>Hardening and packaging</td><td>Dashboards per pack, injection test suite, budgets, VPS deployment, runbook, demo video script</td>
+        <td><span class="st st-todo">Not started</span></td></tr>
+  </table>
+
+  <h3>Release gates that block a merge</h3>
+  <ul>
+    <li>Intent accuracy of at least 90% per pack.</li>
+    <li>Exact match of at least 95% on required invoice fields.</li>
+    <li>Zero <code>auto</code> decisions on eval cases tagged must-escalate, injection or money.</li>
+    <li>Zero tool data leaked on eval cases tagged unverified.</li>
+    <li>All failure-mode tests pass before Pack 2 begins: two workers claiming one action; a worker killed between
+      the external call and completion; an external timeout; a duplicate webhook; an approval arriving after its
+      deadline; a missing tenant context; a mock grant sent to a real branch.</li>
+  </ul>
+
+  <h3>How the work is controlled</h3>
+  <ul>
+    <li>Work is delivered as stacked branches with a review queue: what changed, how to test it, what was verified
+      and what was not. The owner reviews, tests and merges. Builders never push to or merge into main.</li>
+    <li>Every claim is labelled as observed, inferred, unverified or reported by others.</li>
+    <li>A database constraint that blocks the code is never weakened to make the code work.</li>
+    <li>Every lock, lease, pending state and limit must have a documented way out.</li>
+  </ul>
+</section>
+
+<!-- ───────────── 8 evidence ───────────── -->
+<section>
+  <header class="sh">
+  <div class="kicker">8 · Evidence and limits</div>
+  <h2>What is proven, and what is not</h2>
+  </header>
+
+  <h3>Observed on 15 November 2026, local machine, newest build branch</h3>
+  <table>
+    <tr><th style="width:30%">Check</th><th style="width:26%">Result</th><th>What it proves</th></tr>
+    <tr><td>Database safety checks</td><td>293 pass, 0 fail</td><td>The database refuses the bad states it is tested against. It does not prove the application or workflows are safe.</td></tr>
+    <tr><td>Core tests, plain</td><td>189 passed, 19 skipped</td><td>Core logic and API against a disposable database.</td></tr>
+    <tr><td>Core tests with offline AI</td><td>206 passed, 2 skipped</td><td>The AI path end to end through LiteLLM, with a fake model.</td></tr>
+    <tr><td>Core tests with n8n</td><td>208 passed, 0 skipped</td><td>The exported workflows drive core over real HTTP, including both lost-completion cases.</td></tr>
+    <tr><td>Evaluation, customer support pack v3</td><td>110 cases run twice; decision accuracy 1.0; 0 gate violations</td><td>The pipeline and gates behave as specified on fixture answers. It says nothing about a real model's accuracy.</td></tr>
+    <tr><td>Connector gateway tests</td><td>80 passed</td><td>The gateway's refusal and duplicate-protection logic against a stub of core and synthetic provider fixtures.</td></tr>
+    <tr><td>Lint, format, types, secret scan, pack validation</td><td>All pass; 0 secret findings</td><td>Code hygiene on that revision.</td></tr>
+  </table>
+
+  <div class="cols">
+    <div class="box">
+      <h3>Not verified</h3>
+      <ul>
+        <li>Any real provider. No request has been sent to Shopify, Google or a paid model.</li>
+        <li>Hosted CI for the three newest branches, and independent review of the latest fixes.</li>
+        <li>The gateway against the real core service. It is tested against a stub.</li>
+        <li>Live schedules, queue-mode workers and the audit checkpoint schedule in a deployment.</li>
+        <li>Real-model accuracy, cost and latency.</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>Known limits</h3>
+      <ul>
+        <li>A PostgreSQL superuser or table owner can bypass triggers and row-level security. Running services use
+          restricted logins, and the audit checkpoint must be protected under a separate identity.</li>
+        <li>External systems without idempotency keys can still duplicate on a crash; the reconciler must search
+          before creating.</li>
+        <li>An n8n call to core timed out intermittently at 5 seconds under load. The cause is not established.</li>
+        <li>The gateway measures the lease against its own clock, with an 8-second margin.</li>
+        <li>Core's dispatch does not yet carry the email thread fields a real Gmail reply needs.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>What comes next</h3>
+  <ol>
+    <li>Owner review and merge of the live demo stack, the console and the connector gateway.</li>
+    <li>A separately reviewed migration that enables real dispatch, including the claim design and the reply
+      thread fields. Then a Shopify development store and a test Gmail mailbox, with recorded fixtures replacing
+      the synthetic ones.</li>
+    <li>Pack 3 (invoices) and Pack 2 (sales leads), each on mock data first.</li>
+    <li>Phase 6: dashboards, budgets, the injection suite and the demo deployment.</li>
+  </ol>
+  <p class="small muted">Sources: AGENTS.md, docs/adr (0001 to 0032), docs/runbook.md and docs/review-queue.md in the
+    Switchboard repository. Northwind Apparel is a fictional company used for the demo.</p>
+</section>
+
+</body>
+</html>
