@@ -318,3 +318,22 @@ Any new case policy revision invalidates an outstanding grant for dispatch. On t
 Run `scripts/serve_audit_checkpoint.py` under the separate checkpoint OS identity, with `SWITCHBOARD_CHECKPOINT_HISTORY`, `SWITCHBOARD_AUDIT_URL`, `SWITCHBOARD_AUDIT_TOKEN`, and a distinct `SWITCHBOARD_CHECKPOINT_SCHEDULE_TOKEN`. The default listener is loopback. Use a private protected route to its `/checkpoint` endpoint for n8n, with `SWITCHBOARD_CHECKPOINT_URL` and the schedule token. Only the checkpoint identity receives write access to the history. n8n receives neither that access nor the audit token.
 
 Run `./scripts/test_core.ps1 -WithN8n` for the disposable workflow test. It uses the pinned Docker image `docker.n8n.io/n8nio/n8n:2.46.7`, imports the exports into a temporary n8n database, uses a local Slack fixture and a real PostgreSQL mock login, and cleans up its test volume. The test uses manual triggers and a separate checkpoint process. Verify live schedules, queue-mode workers, and checkpoint account permissions when deploying.
+
+## Connector gateway (ADR 0032, release gate 3)
+
+`services/connectors` is the only holder of provider write credentials. Real
+dispatch is still disabled in core, so in every current deployment `/execute`
+ends with "Core did not release this action for real dispatch". That is the
+expected, safe answer until the real-adapter grant migration is reviewed.
+
+| `/execute` answer | Meaning | What to do |
+|---|---|---|
+| 401 | Unknown caller token | Check the caller credential for that tenant. |
+| 409 "Core did not grant" / "did not release" | Core refused the claim or the consume | Nothing was sent. Check the action's state and approval in core. |
+| 409 "Only grants for the real adapter" / "No credential" / "Not enough of the lease" | The gateway refused the dispatch | Nothing was sent. The lease expires and the reconciler closes the attempt. Fix the tenant's adapter configuration or the gateway account list. |
+| 422 "Not executed: …" | The provider or the gateway's own checks rejected it before or instead of the write | Nothing was written. The reconciler records the absence after the lease. |
+| 502 "Provider outcome unknown" | The write may have happened | **Do not retry.** The action becomes `unknown_outcome`. Look the effect up by its idempotency key (refund note `switchboard:<key>`, or the derived Message-ID) and submit evidence through `/actions/{id}/reconcile`. |
+| 502 "Executed, but completion was not recorded" | The provider write succeeded and core did not record it | Same as above; the lookup will find the effect. |
+
+The gateway logs event names and IDs only. It never logs payloads,
+recipients, message bodies or tokens.

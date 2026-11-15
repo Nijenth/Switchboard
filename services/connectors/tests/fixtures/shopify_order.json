@@ -1,0 +1,4 @@
+{"data": {"orders": {"nodes": [{"id": "gid://shopify/Order/5001", "name": "#NW-1003",
+  "refunds": [],
+  "transactions": [{"id": "gid://shopify/OrderTransaction/7001", "kind": "SALE", "status": "SUCCESS",
+    "gateway": "bogus", "amountSet": {"shopMoney": {"amount": "210.00", "currencyCode": "EUR"}}}]}]}}}

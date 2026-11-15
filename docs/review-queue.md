@@ -205,7 +205,7 @@ remains unverified. The CI-only follow-up changes no runtime code.
   "Draft, not sent (status: …)") and the wait-time wording. The data behind
   the caption (`reply_status`) is covered by the unit and n8n tests; the
   caption's rendering in the page is **inferred**.
-- **The other three scripted buttons** (verified order status, unknown
+- **The other four scripted buttons** (verified order status, unknown
   sender, expired, already refunded) were not clicked in the browser. Their
   messages are the ones the n8n test already sends; the console path for them
   is inferred.
@@ -220,3 +220,121 @@ remains unverified. The CI-only follow-up changes no runtime code.
 
 - Rehearse the console once before showing it to anyone.
 - Ask Codex for the independent review of this branch.
+
+---
+
+## Slice 3 — release gate 3: connector gateway
+
+- **Branch:** `build/03-gate3-grants` (from `build/02-live-console`)
+- **Commit:** see `git log -1 build/03-gate3-grants`
+- **Owner decision this slice rests on (2026-11-15):** real provider
+  credentials live in a separate connector gateway, not in n8n.
+
+### What it does
+
+- `docs/adr/0032-connector-gateway.md`: options, the chosen protocol, what
+  changes in AGENTS.md §2.1 (not applied here), what is not built, exits.
+- `services/connectors/` (new service, own requirements, no database access):
+  - `gateway/main.py`: `POST /execute {action_id}`. Claims and consumes the
+    grant with core as `adapter: "real"`, refuses anything it must not act on,
+    performs one provider write, completes.
+  - `gateway/shopify.py`: `order_refund_issue` through `refundCreate`, with a
+    search for an earlier refund carrying the same idempotency key.
+  - `gateway/gmail.py`: `send_reply` through `users.messages.send`, with a
+    search for an earlier message with the derived Message-ID.
+  - `gateway/providers.py`: searches retry (3 attempts, backoff); writes are
+    sent once and classified as refused or unknown outcome.
+  - `tests/`: 46 tests against a stub core and synthetic fixtures.
+- CI: new `connector-gateway` job. Runbook entry added.
+- **Unchanged:** `services/core/app`, migrations, packs, workflow exports,
+  AGENTS.md. Core still answers 409 to `adapter: "real"`, so nothing real can
+  execute.
+
+### One refinement to what I described when asking
+
+I said n8n would pass "an action ID and grant". Built stricter: n8n passes the
+action ID only and the gateway claims the grant itself, because core binds a
+grant to the worker that claimed it. The grant never passes through n8n.
+
+### How to test it
+
+```bash
+cd services/connectors
+python -m pip install -r requirements-dev.txt
+python -m ruff check . && python -m ruff format --check . && python -m mypy gateway
+python -m pytest -q
+```
+
+Then the standard checks at the top of this file (unchanged code paths).
+
+Things worth reading rather than running: the fail-closed checks in
+`gateway/main.py` between consume and the provider call, and
+`providers.write` (the rule that decides "refused" versus "unknown").
+
+### Verified (observed, this Windows machine)
+
+| Check | Result |
+|---|---|
+| Gateway `ruff check` / `ruff format --check` / `mypy gateway` | passed / passed / no issues, 5 files |
+| Gateway `pytest` | 46 passed |
+| `scan_secrets.py` | 0 findings |
+| Core lint and `mypy app harness` | passed |
+| `load_packs --check` | passed |
+| `db-check` (SQL) | exit 0; 301 PASS lines, 0 FAIL lines |
+| `test_core.sh` | 167 passed, 18 skipped |
+| `test_core.sh --offline-ai` | 184 passed, 1 skipped |
+| `test_core.sh --offline-n8n` | **first run: 1 failed, 184 passed. Second run: 185 passed.** See below. |
+
+### Intermittent failure seen once (affects slice 2's test, not this slice's code)
+
+On the first `--offline-n8n` run for this slice, the console block added in
+slice 2 failed at `tests/test_n8n_outbound.py` "decided.status_code == 200":
+the dispatch run after the console's approval exited 1 with an HTTP timeout
+(`AxiosError`, `createTimeoutError`) at the "Consume grant" node, which has a
+5-second timeout to core. That whole run was slow (340 s against the usual
+260 s). The identical code passed on the slice 2 run and on an immediate
+rerun here. This slice changed nothing under `services/core`.
+
+- **Observed:** 1 failure in 3 runs of that block.
+- **Cause:** not established. The slow run points at this machine or Docker
+  Desktop being loaded after many stack start/stop cycles in one session, but
+  that is a guess, not a finding.
+- **Not done:** I did not change any timeout or add a retry to make it pass.
+- **Related gap, found by reading (inferred, not observed):** an n8n CLI run
+  that exceeds its 100-second limit raises `subprocess.TimeoutExpired`, which
+  `LiveStack.n8n` does not convert to `StackError`. In the console that would
+  surface as an unhandled 500 instead of the 502 message. Worth fixing in
+  slice 1's code during review.
+- **Owner/Codex:** run `--offline-n8n` a few times on a quiet machine. If the
+  timeout recurs, treat it as a real defect in how the console drives
+  dispatch and investigate before merging slice 2.
+
+### Not verified — read this before trusting the adapters
+
+- **No request has ever been sent to Shopify or Google.** The request and
+  response shapes come from my knowledge of the public API documentation.
+  The fixtures are synthetic, not recorded. Specific points I could not
+  confirm: the exact `RefundInput` and `Order.refunds`/`transactions` field
+  names for the API version you will use; that the order search by
+  `name:"…"` returns the order with or without the `#` prefix; that Gmail
+  preserves a caller-supplied `Message-ID` on send and that `rfc822msgid:`
+  finds sent mail.
+- **Gateway against the real core:** unverified. The stub mirrors the
+  `Consume` and `Complete` request models in `app/api/execution.py` as I read
+  them. There is no test that runs the gateway against core.
+- **End-to-end real dispatch:** not possible yet (by design, see ADR 0032).
+- **Hosted CI for the new job, independent review:** none.
+
+### Owner must do
+
+1. Have Codex review ADR 0032 and the gateway, especially the refused/unknown
+   classification and the pre-provider checks.
+2. Decide whether to update the AGENTS.md §2.1 table as ADR 0032 describes.
+3. Create a Shopify development store and a test Gmail mailbox; record real
+   responses for each fixture file in `services/connectors/tests/fixtures/`
+   and replace the synthetic ones; fix any shape differences.
+4. Choose and configure the Shopify API version (there is no default).
+5. Commission, as its own reviewed slice: the migration that lets claim,
+   consume, complete and reconcile work for `adapter = 'real'`; the
+   reconciler lookup endpoint on the gateway; the n8n real branches; Gmail
+   OAuth token refresh.
