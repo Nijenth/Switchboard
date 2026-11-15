@@ -28,11 +28,11 @@ Pre-fix tips, recorded before any fix. Each is also a local tag, so the
 reviewer can diff only the fixes even though branches 02 and 03 are rebased.
 The tags are local only; nothing is pushed.
 
-| Branch | Pre-fix tip | Local tag |
-|---|---|---|
-| `build/01-live-stack` | `0e54dab0cdc8b7ad8e4f8d41fb77db4c07122efe` | `pre-fix/01-live-stack` |
-| `build/02-live-console` | `23e8993379781e2d82c1e1c99718a667c6472bcb` | `pre-fix/02-live-console` |
-| `build/03-gate3-grants` | `6659f289359035f86c46ac862b9b9072e925cdde` | `pre-fix/03-gate3-grants` |
+| Branch | Pre-fix tip | Local tag | Current tip | Fix diff / range |
+|---|---|---|---|---|
+| `build/01-live-stack` | `0e54dab0cdc8b7ad8e4f8d41fb77db4c07122efe` | `pre-fix/01-live-stack` | `fbd9b7a` | `pre-fix/01-live-stack..build/01-live-stack` (`89374ef`, `fbd9b7a`) |
+| `build/02-live-console` | `23e8993379781e2d82c1e1c99718a667c6472bcb` | `pre-fix/02-live-console` | `47097ef` | Tree diff `git diff pre-fix/02-live-console build/02-live-console`; branch-local fix `27e60fa..build/02-live-console` (`47097ef`) |
+| `build/03-gate3-grants` | `6659f289359035f86c46ac862b9b9072e925cdde` | `pre-fix/03-gate3-grants` | see `git log -1 build/03-gate3-grants` | Tree diff `git diff pre-fix/03-gate3-grants build/03-gate3-grants`; branch-local fixes `8d491de`, `347ed5c`, `0597ecd`, and this doc commit |
 
 Fixes are new commits. Branches 02 and 03 are rebased onto the fixed branch
 below them, so their original commits get new hashes with the same content.
@@ -97,7 +97,7 @@ up|down`). If the full brief asks for more, that part is not built.
    processes), wait 20 seconds, then `status` prints `stale` and `down` removes
    the containers, networks, volume and state file.
 
-### Verified (observed, on this Windows machine, final revision of the code)
+### Verified prior to the review fix pass (reported-by-builder, this Windows machine)
 
 | Check | Result |
 |---|---|
@@ -141,7 +141,7 @@ survived its parent. `checkpoint_child.py` fixes it and the test was repeated.
 Pre-fix tip `0e54dab0cdc8b7ad8e4f8d41fb77db4c07122efe`.
 Review range `pre-fix/01-live-stack..build/01-live-stack`.
 
-Commit `89374ef` implements items 1�4, including exclusive ownership before
+Commit `89374ef` implements items 1–4, including exclusive ownership before
 resource creation, checked cleanup, sanitized subprocess timeouts and the
 public lifecycle regression test. The follow-up adds its unit tests to CI.
 
@@ -199,7 +199,7 @@ remains unverified. The CI-only follow-up changes no runtime code.
    review". Approve it: "Reply sent after review".
 6. `bash scripts/demo_live down` from another terminal.
 
-### Verified (observed, this Windows machine)
+### Verified prior to the review fix pass (reported-by-builder, this Windows machine)
 
 | Check | Result |
 |---|---|
@@ -236,6 +236,17 @@ remains unverified. The CI-only follow-up changes no runtime code.
 - Rehearse the console once before showing it to anyone.
 - Ask Codex for the independent review of this branch.
 
+## Review fixes for slice 2
+
+- **Pre-fix tip:** `23e8993379781e2d82c1e1c99718a667c6472bcb` (`pre-fix/02-live-console`).
+- **Branch tip / fix range:** Rebased onto `build/01-live-stack` (`fbd9b7a` -> `27e60fa`) and fixed in `47097ef` (`27e60fa..build/02-live-console`; tree diff `git diff pre-fix/02-live-console build/02-live-console`, plus `8d491de` on `build/03-gate3-grants`).
+- **Items 5–8 fixed in `47097ef`:**
+  - Preserve partially processed console sends (`partial_send` state) when `wf_ingest_email` succeeds before a later workflow step fails so retries redeliver the same `external_id`.
+  - Add console redelivery idempotency check in `services/core/tests/test_n8n_outbound.py` (`counts_before == console_counts()`), asserting 1 message, 1 case, and no duplicate draft, approval request, or non-read action when the same message is redelivered.
+  - Harden browser console static assets and response headers (`console.py`, `console_page.py`, `test_console.py`).
+  - Preserve both lost-completion fault-injection assertions (`SwitchboardDispatch1` on `order_status` and `order_refund_issue`) in `tests/test_n8n_outbound.py`.
+- **Verification (observed during the review fix pass on descendant `build/03-gate3-grants`):** See the consolidated verification ledger below; `test_core.sh --offline-n8n` passed (`208 passed, 0 skipped`), exercising `test_demo_live.py`, `test_console.py`, both lost-completion assertions, and the console redelivery assertion. Earlier `47097ef` checks by the prior builder are `reported-by-builder`.
+
 ---
 
 ## Slice 3 — release gate 3: connector gateway
@@ -259,7 +270,7 @@ remains unverified. The CI-only follow-up changes no runtime code.
     search for an earlier message with the derived Message-ID.
   - `gateway/providers.py`: searches retry (3 attempts, backoff); writes are
     sent once and classified as refused or unknown outcome.
-  - `tests/`: 46 tests against a stub core and synthetic fixtures.
+  - `tests/`: 46 tests pre-fix against a stub core and synthetic fixtures (expanded to 80 tests in `0597ecd`).
 - CI: new `connector-gateway` job. Runbook entry added.
 - **Unchanged:** `services/core/app`, migrations, packs, workflow exports,
   AGENTS.md. Core still answers 409 to `adapter: "real"`, so nothing real can
@@ -286,9 +297,9 @@ Things worth reading rather than running: the fail-closed checks in
 `gateway/main.py` between consume and the provider call, and
 `providers.write` (the rule that decides "refused" versus "unknown").
 
-### Verified (observed, this Windows machine)
+### Verified prior to the Gate 3 review fixes (reported-by-builder, this Windows machine)
 
-| Check | Result |
+| Check | Result (`reported-by-builder`) |
 |---|---|
 | Gateway `ruff check` / `ruff format --check` / `mypy gateway` | passed / passed / no issues, 5 files |
 | Gateway `pytest` | 46 passed |
@@ -300,9 +311,9 @@ Things worth reading rather than running: the fail-closed checks in
 | `test_core.sh --offline-ai` | 184 passed, 1 skipped |
 | `test_core.sh --offline-n8n` | With the slice 2 test: 3 of 5 runs passed (see below). With the follow-up test change: 5 of 5 runs, 185 passed each. |
 
-### Intermittent n8n timeout in the console test (slice 2's test; follow-up commit on this branch)
+### Intermittent n8n timeout in the console test (slice 2's test; follow-up commit `8d491de`)
 
-**What was observed.** With the console block of `tests/test_n8n_outbound.py`
+**Earlier builder notes (`reported-by-builder`):** With the console block of `tests/test_n8n_outbound.py`
 driving the console through the in-process `TestClient` (as committed in
 slice 2), `--offline-n8n` gave:
 
@@ -319,30 +330,49 @@ allow core 5 seconds), both inside the console block, at different steps. The
 second failing run was not slow, so machine load does not explain it. In the
 same runs, the hundreds of n8n calls the test makes directly never timed out.
 
-**What I changed (one change, test only).** The console block now talks to
+**What the builder changed (test only, landed in `47097ef` / `8d491de`).** The console block now talks to
 the console over real HTTP on a loopback port (`serve` + `httpx`), which is
-how the browser uses it. No timeout was raised and no retry was added.
+how the browser uses it. No timeout was raised and no retry was added. The prior builder reported 5 × 185 passed (`reported-by-builder`) and noted cause was not established.
 
-**Result.** 5 runs, 5 × 185 passed. Together with the browser session in
-slice 2 (seven real-HTTP console steps, no failure), the evidence points at
-the in-process test client as the trigger.
+**Diagnosis from the review fix pass (`observed` / `inferred`):**
 
-**What this does not prove.**
+- Even with `serve(app_console)` over real loopback HTTP in `47097ef`, an outbound integration run during the review fix pass stopped before the console redelivery assertion, and a focused rerun hit a 5000ms Axios timeout in `SwitchboardEmail1` (`wf_ingest_email` -> `wf_case_pipeline`) *before* `app_console` was even instantiated while another disposable Docker suite was active.
+- Inspection of exported workflow HTTP nodes (`observed`) shows `wf_case_pipeline` uses 15000ms timeouts, whereas `wf_tool_*` (including `wf_tool_order_identity_check`, `wf_tool_order_lookup`, and `wf_tool_order_refund_eligibility` called by `SwitchboardEmail1` via `wf_lookups_run`), `wf_approval_slack`, and `wf_mock_outbound` use 5000ms timeouts.
+- Diagnosis (`inferred`): the 5000ms n8n HTTP node timeout is sensitive to CPU/I/O contention from competing disposable Docker stacks and cold container startup across the Docker Desktop bridge into single-process `uvicorn`, rather than being caused solely by `TestClient`.
+- When `scripts/test_core.sh --offline-n8n` ran sequentially with no competing disposable containers (`observed`), `208 passed, 0 skipped` including `test_public_lifecycle_up_smoke_status_second_up_down`, both lost-completion assertions (`SwitchboardDispatch1`), and the console redelivery assertion (`counts_before == console_counts()` verifying 1 message, 1 case, and no duplicate draft, review, or non-read action). No timeouts were raised and no retries were added.
 
-- **Cause: not established.** I do not know why driving the console through
-  `TestClient` makes core slow to answer n8n. This is an inference from 5
-  clean runs after 2 failures in 5; with a true failure rate of 40%, 5 clean
-  runs would still happen about 8% of the time by chance.
-- If the timeout ever appears with the real-HTTP test or in a live console
-  session, it is a real defect in the console path. Stop and investigate; do
-  not raise the 5-second node timeout to hide it. Per the "second fix in the
-  same failure class" rule, the next step would be a design note, not
-  another change.
-
-**Related gap found by reading (inferred, not observed):** an n8n CLI run that
+**Related gap found by reading (`inferred`, not fixed here):** an n8n CLI run that
 exceeds its 100-second limit raises `subprocess.TimeoutExpired`, which
 `LiveStack.n8n` does not convert to `StackError`. In the console that would
-be an unhandled 500 instead of the 502 message. Not fixed here.
+be an unhandled 500 instead of the 502 message.
+
+## Review fixes for slice 3
+
+- **Pre-fix tip:** `6659f289359035f86c46ac862b9b9072e925cdde` (`pre-fix/03-gate3-grants`).
+- **Branch tip / fix range:** Rebased onto `build/02-live-console` (`47097ef` -> `d8b84d1`, `8d491de`, `347ed5c`), gateway + ADR 0032 fixes in `0597ecd`, and this doc commit (tree diff `git diff pre-fix/03-gate3-grants build/03-gate3-grants`).
+- **Items 9–15 fixed in `0597ecd` (`services/connectors/` and `docs/adr/0032-connector-gateway.md`):**
+  - Enforce an absolute monotonic lease deadline (`expires_at - 8s` completion reserve), recalculate remaining budget before every provider call (including search retries and the write), fail closed with HTTP 409 if `< 1s` remains, and bound every provider HTTP request with `asyncio.timeout` plus client timeout.
+  - Accept only HTTP 2xx JSON objects from `providers.search` with `follow_redirects=False` (tested with `302` returning `{}` -> HTTP 422 without calling `write`).
+  - Validate at startup (`Settings.model_post_init`) that each Shopify account's `endpoint.host` matches `destination`.
+  - Classify both fresh and reused Shopify refunds by `transactions` evidence (`SUCCESS` with `hasNextPage == false` -> executed; `ERROR`/`FAILURE` only -> HTTP 422 `{"status": "failed"}`; `PENDING`, empty, mixed, paginated `hasNextPage: true`, multiple matching refunds on one order, or `refund` paired with `userErrors` -> HTTP 502 `UnknownOutcome`).
+  - Treat only HTTP `400`, `401`, `403`, `404`, and `422` as deterministic provider write refusals (`Refused` -> HTTP 422); all other non-2xx statuses (`301`, `408`, `409`, `429`, `503`), transport errors, timeouts, and unreadable bodies raise `UnknownOutcome` (HTTP 502) and never call `complete`.
+  - Implement and unit-test Shopify `@idempotent(key: $key)` and Gmail `threadId`, `In-Reply-To`, and `References` validation/headers.
+  - Update `docs/adr/0032-connector-gateway.md` with the refusal policy, `gmail.send` + `gmail.readonly` scopes, options for preventing the gateway from claiming a mock action before `consume` returns 409 (left for the owner to decide), and explicit notice that real provider behavior is unverified until sandbox testing.
+
+### Verification results (review fix pass — `observed` on this Windows machine)
+
+| Check | Result (`observed`) | Notes / Scope |
+|---|---|---|
+| `scan_secrets.py` | 0 findings | Clean tree check |
+| `services/core`: `ruff check .` / `ruff format --check .` / `mypy app harness` | passed / 47 files formatted / 33 files clean | No changes under `services/core/app` (`git diff main -- services/core/app` empty) |
+| `services/core` CI unit suite (`--cov=app.engine --cov-fail-under=90`) | 150 passed, 1 skipped (4.25s); 95.39% engine coverage | Local Windows run of `.github/workflows/phase1.yml` unit list |
+| `services/connectors`: `ruff check .` / `ruff format --check .` / `mypy gateway` / `pytest -q` | passed / 7 files formatted / 5 files clean / 80 passed (1.64s) | Runs against stub core and synthetic fixtures; unverified against real Shopify/Gmail |
+| `load_packs --check` / `pytest -q scripts/tests` | 5 pack versions validated / 40 passed (6.43s) | `ecommerce_support` (v1–v3), `invoice_processing`, `sales_leads` |
+| `db-check` (SQL `safety_checks.sql`) | exit 0; 293 `NOTICE: PASS` lines (`Passed: 187, 13, 53, 8, 8`, `Failed: 0`) | Disposable PostgreSQL container |
+| `scripts/test_core.sh` | 189 passed, 19 skipped (26.57s) | Plain core mode |
+| `scripts/test_core.sh --offline-ai` | 206 passed, 2 skipped (42.34s); eval runner 110 cases × 2 (`decision_accuracy: 1`, `gate_violations: 0`) | Disposable postgres + fake-model/litellm/offline-relay |
+| `scripts/test_core.sh --offline-n8n` | 208 passed, 0 skipped (437.47s); eval runner 110 cases × 2 (`decision_accuracy: 1`, `gate_violations: 0`) | Includes `test_demo_live.py` lifecycle, `test_console.py`, both lost-completion assertions, and console redelivery idempotency check |
+| Disposable Docker cleanup check | 0 `switchboard-core-check` containers/networks, 0 `switchboard-n8n-test` volumes | Verified via `docker --context desktop-linux` after `--offline-n8n` |
 
 ### Not verified — read this before trusting the adapters
 
@@ -370,6 +400,7 @@ be an unhandled 500 instead of the 502 message. Not fixed here.
    and replace the synthetic ones; fix any shape differences.
 4. Choose and configure the Shopify API version (there is no default).
 5. Commission, as its own reviewed slice: the migration that lets claim,
-   consume, complete and reconcile work for `adapter = 'real'`; the
-   reconciler lookup endpoint on the gateway; the n8n real branches; Gmail
-   OAuth token refresh.
+   consume, complete and reconcile work for `adapter = 'real'`; the claim
+   design choice from ADR 0032 (to prevent claiming a mock action before real
+   `consume` returns 409); the reconciler lookup endpoint on the gateway; the
+   n8n real branches; and Gmail OAuth token refresh.
