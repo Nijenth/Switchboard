@@ -3,8 +3,10 @@
 No network. Every provider and core call goes through httpx.MockTransport.
 """
 
+import asyncio
 import json
 from base64 import urlsafe_b64decode
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email import message_from_bytes
 from pathlib import Path
@@ -84,7 +86,10 @@ def reply_dispatch(**overrides: Any) -> dict[str, Any]:
             "id": "97000000-0000-0000-0000-000000000001",
             "channel": "email",
             "recipient": "emma.jones@example.com",
-            "subject": None,
+            "subject": "Where is my order?",
+            "thread_id": "18f0abc00000abcd",
+            "in_reply_to": "<order-question@example.com>",
+            "references": "<earlier@example.com> <order-question@example.com>",
             "body": "Your order NW-1001 is shipped with UPS.",
         },
         **overrides,
@@ -117,12 +122,13 @@ class Stub:
             raise response
         return response
 
-    def client(self, **overrides: Any) -> TestClient:
+    def client(self, *, clock: Callable[[], float] = lambda: 0, **overrides: Any) -> TestClient:
         app = create_app(
             settings(**overrides),
-            core=httpx.Client(transport=httpx.MockTransport(self.core)),
-            provider=httpx.Client(transport=httpx.MockTransport(self.provider)),
+            core=httpx.AsyncClient(transport=httpx.MockTransport(self.core)),
+            provider=httpx.AsyncClient(transport=httpx.MockTransport(self.provider)),
             now=lambda: NOW,
+            clock=clock,
         )
         api = TestClient(app)
         api.headers["Authorization"] = f"Bearer {CALLER}"
@@ -159,7 +165,10 @@ def test_refund_claims_consumes_as_real_refunds_once_and_completes() -> None:
     lookup, mutation = stub.provider_calls
     assert str(lookup.url) == SHOP and lookup.headers["X-Shopify-Access-Token"] == SHOP_TOKEN
     assert json.loads(lookup.content)["variables"] == {"query": 'name:"NW-1003"'}
-    refund_input = json.loads(mutation.content)["variables"]["input"]
+    payload = json.loads(mutation.content)
+    assert "@idempotent(key: $key)" in payload["query"]
+    assert payload["variables"]["key"] == "key-1"
+    refund_input = payload["variables"]["input"]
     assert refund_input == {
         "orderId": "gid://shopify/Order/5001",
         "note": "Switchboard refund switchboard:key-1",
@@ -194,9 +203,14 @@ def test_reply_is_sent_once_with_a_stable_message_id() -> None:
     expected_id = gmail.message_id(MAILBOX, "key-1")
     assert search_call.url.params["q"] == "rfc822msgid:" + expected_id.strip("<>")
     assert send.headers["Authorization"] == f"Bearer {MAIL_TOKEN}"
-    message = message_from_bytes(urlsafe_b64decode(json.loads(send.content)["raw"]))
+    payload = json.loads(send.content)
+    assert payload["threadId"] == "18f0abc00000abcd"
+    assert search_call.url.params["labelIds"] == "SENT"
+    message = message_from_bytes(urlsafe_b64decode(payload["raw"]))
+    assert message["In-Reply-To"] == "<order-question@example.com>"
+    assert message["References"] == "<earlier@example.com> <order-question@example.com>"
     assert (message["From"], message["To"]) == (MAILBOX, "emma.jones@example.com")
-    assert message["Message-ID"] == expected_id and message["Subject"] == gmail.DEFAULT_SUBJECT
+    assert message["Message-ID"] == expected_id and message["Subject"] == "Where is my order?"
     assert message.get_payload().strip() == "Your order NW-1001 is shipped with UPS."
 
 
@@ -209,6 +223,109 @@ def test_reply_already_sent_for_this_key_is_reused() -> None:
         "reused": True,
     }
     assert len(stub.provider_calls) == 1
+
+
+def test_redirect_with_empty_body_does_not_authorize_gmail_send() -> None:
+    stub = Stub(reply_dispatch(), [httpx.Response(302, json={})])
+    assert run(stub).status_code == 422
+    assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+def test_shopify_destination_must_match_endpoint_host() -> None:
+    accounts = settings().model_dump(mode="json")["accounts"]
+    accounts[0]["endpoint"] = "https://another.myshopify.com/admin/api/2026-04/graphql.json"
+    with pytest.raises(ValueError, match="host must match the destination"):
+        settings(accounts=accounts)
+
+
+@pytest.mark.parametrize("statuses", [["PENDING"], ["FAILURE"], ["SUCCESS", "FAILURE"], []])
+@pytest.mark.parametrize("reused", [False, True])
+def test_only_settled_refunds_are_completed(statuses: list[str], reused: bool) -> None:
+    if reused:
+        body = fixture("shopify_order_already_refunded.json")
+        refund = body["data"]["orders"]["nodes"][0]["refunds"][0]
+        responses = []
+    else:
+        body = fixture("shopify_refund_created.json")
+        refund = body["data"]["refundCreate"]["refund"]
+        responses = [ok("shopify_order.json")]
+    refund["transactions"]["nodes"] = [{"status": status} for status in statuses]
+    responses.append(httpx.Response(200, json=body))
+    stub = Stub(refund_dispatch(), responses)
+    result = run(stub)
+    if statuses == ["FAILURE"]:
+        assert result.status_code == 422
+        assert result.json()["detail"]["status"] == "failed"
+    else:
+        assert result.status_code == 502
+        assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == (1 if reused else 2)
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+def test_refund_record_with_user_errors_is_unknown() -> None:
+    body = fixture("shopify_refund_created.json")
+    body["data"]["refundCreate"]["userErrors"] = [{"message": "Synthetic error"}]
+    stub = Stub(refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=body)])
+    assert run(stub).status_code == 502
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize("reused", [False, True])
+def test_paginated_refund_transactions_are_unknown(reused: bool) -> None:
+    if reused:
+        body = fixture("shopify_order_already_refunded.json")
+        refund = body["data"]["orders"]["nodes"][0]["refunds"][0]
+        responses = []
+    else:
+        body = fixture("shopify_refund_created.json")
+        refund = body["data"]["refundCreate"]["refund"]
+        responses = [ok("shopify_order.json")]
+    refund["transactions"]["pageInfo"]["hasNextPage"] = True
+    responses.append(httpx.Response(200, json=body))
+    stub = Stub(refund_dispatch(), responses)
+    assert run(stub).status_code == 502
+    assert len(stub.provider_calls) == (1 if reused else 2)
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+def test_multiple_matching_refunds_on_order_is_unknown() -> None:
+    body = fixture("shopify_order_already_refunded.json")
+    first = body["data"]["orders"]["nodes"][0]["refunds"][0]
+    second = {**first, "id": "gid://shopify/Refund/9099"}
+    body["data"]["orders"]["nodes"][0]["refunds"] = [first, second]
+    stub = Stub(refund_dispatch(), [httpx.Response(200, json=body)])
+    assert run(stub).status_code == 502
+    assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize("lookup_status", [200, 503])
+def test_expired_budget_blocks_next_provider_request(lookup_status: int) -> None:
+    stub = Stub(
+        refund_dispatch(), [httpx.Response(lookup_status, json=fixture("shopify_order.json"))]
+    )
+    times = iter([0.0, 0.0, 37.0])
+    assert run(stub, clock=lambda: next(times)).status_code == 409
+    assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+def test_write_timeout_shrinks_after_lookup() -> None:
+    stub = Stub(refund_dispatch(), [ok("shopify_order.json"), ok("shopify_refund_created.json")])
+    times = iter([0.0, 0.0, 33.0])
+    assert run(stub, clock=lambda: next(times)).status_code == 200
+    assert stub.provider_calls[1].extensions["timeout"]["read"] == 4.0
+
+
+@pytest.mark.parametrize("status", [301, 400, 401, 403, 404, 408, 409, 422, 429, 503])
+def test_write_classification_uses_explicit_no_effect_statuses(status: int) -> None:
+    stub = Stub(refund_dispatch(), [ok("shopify_order.json"), httpx.Response(status)])
+    expected = 422 if status in {400, 401, 403, 404, 422} else 502
+    assert run(stub).status_code == expected
+    assert len(stub.provider_calls) == 2
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
 @pytest.mark.parametrize(
@@ -287,21 +404,27 @@ def test_lost_completion_is_reported_without_a_second_write() -> None:
     assert len(stub.provider_calls) == 2
 
 
-def provider_client(responses: list[httpx.Response | Exception]) -> tuple[httpx.Client, Stub]:
+def provider_client(responses: list[httpx.Response | Exception]) -> tuple[httpx.AsyncClient, Stub]:
     stub = Stub({}, responses)
-    return httpx.Client(transport=httpx.MockTransport(stub.provider)), stub
+    return httpx.AsyncClient(transport=httpx.MockTransport(stub.provider)), stub
 
 
 def test_search_retries_then_succeeds_and_the_write_is_sent_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     waits: list[float] = []
-    monkeypatch.setattr("gateway.providers.sleep", waits.append)
+
+    async def record_wait(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr("gateway.providers.sleep", record_wait)
     client, stub = provider_client(
         [httpx.Response(429), httpx.Response(502), ok("shopify_order.json")]
         + [ok("shopify_refund_created.json")]
     )
-    effect = shopify.issue_refund(client, SHOP, SHOP_TOKEN, refund_dispatch(), 5)
+    effect = asyncio.run(
+        shopify.issue_refund(client, SHOP, SHOP_TOKEN, refund_dispatch(), lambda: 5)
+    )
     assert effect.external_ref == "gid://shopify/Refund/9002" and len(stub.provider_calls) == 4
     assert waits == [0.5, 1.0]  # exponential backoff between search attempts
 
@@ -309,10 +432,13 @@ def test_search_retries_then_succeeds_and_the_write_is_sent_once(
 def test_search_gives_up_after_three_attempts_without_writing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("gateway.providers.sleep", lambda _: None)
+    async def no_wait(_: float) -> None:
+        pass
+
+    monkeypatch.setattr("gateway.providers.sleep", no_wait)
     client, stub = provider_client([httpx.Response(503)] * 3)
     with pytest.raises(Refused):
-        shopify.issue_refund(client, SHOP, SHOP_TOKEN, refund_dispatch(), 5)
+        asyncio.run(shopify.issue_refund(client, SHOP, SHOP_TOKEN, refund_dispatch(), lambda: 5))
     assert len(stub.provider_calls) == 3
 
 
@@ -331,7 +457,7 @@ def test_search_gives_up_after_three_attempts_without_writing(
 def test_malformed_refund_payload_is_refused_without_any_call(dispatch: dict[str, Any]) -> None:
     client, stub = provider_client([])
     with pytest.raises(Refused):
-        shopify.issue_refund(client, SHOP, SHOP_TOKEN, dispatch, 5)
+        asyncio.run(shopify.issue_refund(client, SHOP, SHOP_TOKEN, dispatch, lambda: 5))
     assert stub.provider_calls == []
 
 
@@ -343,8 +469,14 @@ def test_refund_that_does_not_fit_the_payment_is_refused_before_the_write(
 ) -> None:
     client, stub = provider_client([ok("shopify_order.json")])
     with pytest.raises(Refused):
-        shopify.issue_refund(
-            client, SHOP, SHOP_TOKEN, refund_dispatch(amount=amount, currency=currency), 5
+        asyncio.run(
+            shopify.issue_refund(
+                client,
+                SHOP,
+                SHOP_TOKEN,
+                refund_dispatch(amount=amount, currency=currency),
+                lambda: 5,
+            )
         )
     assert len(stub.provider_calls) == 1
 
@@ -357,21 +489,28 @@ def test_refund_that_does_not_fit_the_payment_is_refused_before_the_write(
         {"subject": "Hello\r\nBcc: evil@example.com"},
         {"body": "   "},
         {"channel": "web_chat"},
+        {"thread_id": None},
+        {"thread_id": "not-hex!"},
+        {"in_reply_to": None},
+        {"in_reply_to": "not-a-message-id"},
+        {"references": "<a@example.com>\r\nBcc: evil@example.com <order-question@example.com>"},
+        {"references": "<other@example.com>"},
+        {"references": "invalid-id <order-question@example.com>"},
     ],
 )
-def test_unsendable_draft_is_refused_without_any_call(draft: dict[str, str]) -> None:
+def test_unsendable_draft_is_refused_without_any_call(draft: dict[str, Any]) -> None:
     dispatch = reply_dispatch()
     dispatch["draft"] = {**dispatch["draft"], **draft}
     client, stub = provider_client([])
     with pytest.raises(Refused):
-        gmail.send_reply(client, MAILBOX, MAIL_TOKEN, dispatch, 5)
+        asyncio.run(gmail.send_reply(client, MAILBOX, MAIL_TOKEN, dispatch, lambda: 5))
     assert stub.provider_calls == []
 
 
 def test_send_without_a_message_id_in_the_answer_is_an_unknown_outcome() -> None:
     client, _ = provider_client([ok("gmail_search_empty.json"), httpx.Response(200, json={})])
     with pytest.raises(UnknownOutcome):
-        gmail.send_reply(client, MAILBOX, MAIL_TOKEN, reply_dispatch(), 5)
+        asyncio.run(gmail.send_reply(client, MAILBOX, MAIL_TOKEN, reply_dispatch(), lambda: 5))
 
 
 @pytest.mark.parametrize(

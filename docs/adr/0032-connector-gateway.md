@@ -64,18 +64,17 @@ AGENTS.md itself is not edited in this slice.
 
 | Tool | Provider call | Duplicate protection |
 |---|---|---|
-| `order_refund_issue` | Shopify Admin GraphQL: find the order by name, then `refundCreate` | The refund note carries `switchboard:<idempotency_key>`. The gateway looks for that note first and returns the existing refund instead of creating a second one. |
-| `send_reply` | Gmail `users.messages.send` | The Message-ID is derived from the idempotency key. The gateway searches `rfc822msgid:` first and returns the existing message instead of sending again. |
+| `order_refund_issue` | Shopify Admin GraphQL: find the order by name, then `refundCreate` | Uses `@idempotent(key: $key)` and stores `switchboard:<idempotency_key>` in the refund note. The gateway checks existing order refunds for that marker first and classifies both fresh and reused refunds by their transaction nodes (`SUCCESS` with `hasNextPage == false` -> executed; `ERROR`/`FAILURE` only -> `failed` HTTP 422; `PENDING`, empty, mixed, paginated, multiple matching refunds, or `refund` paired with `userErrors` -> `UnknownOutcome` HTTP 502). |
+| `send_reply` | Gmail `users.messages.send` with `threadId`, `Subject`, `In-Reply-To`, and `References` | The Message-ID is derived from the idempotency key. The gateway searches `SENT` mail (`labelIds=SENT`, `q=rfc822msgid:...`) first and returns the existing message instead of sending again. |
 
-The gateway never retries a write. Searches (which change nothing) retry up to
-three times with exponential backoff on 429 and 5xx. Every provider call has a
-timeout bounded by the remaining lease.
+**Configuration & credential constraints:**
+- At startup (`Settings.model_post_init`), every Shopify account must use an HTTPS `endpoint` whose hostname equals `destination` so credentials cannot be paired with a mismatched shop endpoint.
+- Gmail credentials require both `https://www.googleapis.com/auth/gmail.send` and `https://www.googleapis.com/auth/gmail.readonly`: `gmail.send` alone cannot run the `users.messages.list` (`rfc822msgid:`) duplicate check.
 
-If the outcome of a write is unknown (timeout, 5xx, connection lost), the
-gateway reports that to the caller and does **not** complete the action. The
-lease expires and the action becomes `unknown_outcome`, exactly as ADR 0006
-and ADR 0026 already define. The search-first rule is what makes a later
-lookup safe.
+**Lease budget, search rules, and write refusal policy:**
+- Once `consume` returns `expires_at`, the gateway sets an absolute monotonic deadline leaving an 8-second completion reserve (`expires_at - 8s`). Before **every** provider call — including each search retry and the write — the gateway recalculates remaining budget (`min(remaining, 15s)`), fails closed with HTTP 409 if less than 1 second remains, and bounds the entire HTTP call with `asyncio.timeout` plus the client timeout.
+- Searches never follow redirects (`follow_redirects=False`) and accept only HTTP `2xx` JSON-object responses. Non-retryable statuses (`3xx` such as `302` with `{}` and `4xx` except `429`), unreadable bodies, or exhausting 3 attempts (`0.5s`, `1.0s` backoff) on `429`, `5xx`, or transport errors raise `Refused` (HTTP 422) without attempting a write.
+- Writes are sent **at most once** with `follow_redirects=False` and never retried. Only HTTP `400`, `401`, `403`, `404`, and `422` are treated as deterministic provider write refusals (`Refused` -> HTTP 422, no external effect). All other non-2xx statuses (`3xx`, `408`, `409`, `429`, `5xx`), transport errors, timeouts, and unreadable bodies raise `UnknownOutcome` (HTTP 502) and are **not** completed in core, so the lease expires to `unknown_outcome` and reconciles later (ADR 0006, ADR 0026).
 
 ## What is deliberately not built here
 
@@ -87,12 +86,29 @@ lookup safe.
    reviewed on its own, not batch-built. Until then nothing real can execute,
    even with credentials configured. The gateway is tested against a stub of
    core's documented API.
-2. **Reconciler lookup through the gateway.** The search functions exist in
+2. **Preventing the gateway from claiming a mock action before `consume` returns 409.**
+   Because `POST /actions/{id}/claim` is shared and core is unchanged in Gate 3,
+   sending a `mock` action ID to the gateway currently claims an `executing`
+   lease before `POST /actions/{id}/consume` (`adapter: "real"`) rejects with
+   409; the unclaimed-again path relies on lease expiry + reconciliation. When
+   enabling real dispatch, the **owner must choose** one of these claim
+   designs:
+   - **Option 1 — Adapter parameter on `/actions/{id}/claim`:** Have the
+     gateway pass `adapter: "real"` (and n8n mock branches pass `"mock"`) so
+     core checks the configured `tenant_packs.config.adapters` before granting
+     a lease and returns 409 without mutating state on mismatch.
+   - **Option 2 — Separate worker principals/routes per adapter:** Issue distinct
+     worker tokens (or claim endpoints) for mock runners vs. the connector
+     gateway so core derives the allowed adapter from the caller credential.
+   - **Option 3 — Snapshot resolved `adapter` onto `actions` at `/decide`:**
+     Persist the resolved adapter mode on the action row when proposed so
+     `claim_action` enforces the adapter directly at `UPDATE ... RETURNING`.
+3. **Reconciler lookup through the gateway.** The search functions exist in
    the adapters; the endpoint the reconciler would call does not.
-3. **n8n real branches.** The exported workflows are unchanged.
-4. **Gmail OAuth token refresh.** The gateway takes an access token from
+4. **n8n real branches.** The exported workflows are unchanged.
+5. **Gmail OAuth token refresh.** The gateway takes an access token from
    configuration. A refresh flow is needed before real use.
-5. **Read tools on real adapters** (order lookup, identity check).
+6. **Read tools on real adapters** (order lookup, identity check).
 
 ## Every new live state and its exit (ADR 0026)
 
@@ -108,9 +124,13 @@ one lease (45 seconds):
 
 ## Known limits (do not claim otherwise)
 
-- The provider request and response shapes were written from knowledge of the
-  public API documentation. The fixtures are **synthetic**, not recorded from
-  a real store or mailbox. No request has been sent to Shopify or Google.
+- **Real provider behavior is unverified until sandbox testing.** The provider
+  request and response shapes (including `@idempotent`, Shopify refund
+  transaction statuses, and Gmail `threadId`/`In-Reply-To`/`References`
+  preservation and `rfc822msgid:` search under `gmail.send` + `gmail.readonly`)
+  were written from public API documentation. The fixtures are **synthetic**,
+  not recorded from a real Shopify development store or Gmail mailbox, and no
+  request has been sent to Shopify or Google.
 - The Shopify API version is required configuration and is not defaulted,
   because no version has been verified.
 - Whoever can read the gateway's environment can use the provider

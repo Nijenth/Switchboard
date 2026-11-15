@@ -2,10 +2,12 @@
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from hmac import compare_digest
 from os import environ
+from time import monotonic
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -14,7 +16,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 
 from gateway import gmail, shopify
-from gateway.providers import Effect, Refused, UnknownOutcome
+from gateway.providers import Effect, LeaseElapsed, ProviderFailed, Refused, UnknownOutcome
 
 log = logging.getLogger("switchboard.gateway")
 Token = Annotated[str, Field(min_length=32, max_length=512, pattern=r"^[\x21-\x7e]+$", repr=False)]
@@ -74,6 +76,8 @@ class Settings(BaseModel):
                 raise ValueError("Only Shopify accounts take an endpoint")
             if account.endpoint is not None and account.endpoint.scheme != "https":
                 raise ValueError("Provider endpoints must use https")
+            if account.endpoint is not None and account.endpoint.host != account.destination:
+                raise ValueError("Shopify endpoint host must match the destination shop")
         keys = [(a.tenant_id, a.tool_key, a.destination) for a in self.accounts]
         if len(set(keys)) != len(keys):
             raise ValueError("One credential per tenant, tool and destination")
@@ -93,13 +97,26 @@ class Executed(BaseModel):
 def create_app(
     settings: Settings,
     *,
-    core: httpx.Client | None = None,
-    provider: httpx.Client | None = None,
+    core: httpx.AsyncClient | None = None,
+    provider: httpx.AsyncClient | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    clock: Callable[[], float] = monotonic,
 ) -> FastAPI:
-    app = FastAPI(title="Switchboard connector gateway", docs_url=None, redoc_url=None)
-    core_client = core or httpx.Client(timeout=CORE_TIMEOUT_SECONDS)
-    provider_client = provider or httpx.Client(follow_redirects=False)
+    core_client = core or httpx.AsyncClient(timeout=CORE_TIMEOUT_SECONDS)
+    provider_client = provider or httpx.AsyncClient(follow_redirects=False)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        async with AsyncExitStack() as resources:
+            if core is None:
+                await resources.enter_async_context(core_client)
+            if provider is None:
+                await resources.enter_async_context(provider_client)
+            yield
+
+    app = FastAPI(
+        title="Switchboard connector gateway", docs_url=None, redoc_url=None, lifespan=lifespan
+    )
     core_url = str(settings.core_url).rstrip("/")
 
     def authenticate(authorization: str | None) -> UUID:
@@ -110,9 +127,9 @@ def create_app(
                     return caller.tenant_id
         raise HTTPException(401, "Gateway credential is not authorized")
 
-    def core_post(tenant: UUID, path: str, body: dict[str, Any] | None) -> httpx.Response:
+    async def core_post(tenant: UUID, path: str, body: dict[str, Any] | None) -> httpx.Response:
         worker = next(e.token for e in settings.core_worker_tokens if e.tenant_id == tenant)
-        return core_client.post(
+        return await core_client.post(
             core_url + path,
             json=body,
             headers={"Authorization": f"Bearer {worker}"},
@@ -120,7 +137,7 @@ def create_app(
         )
 
     @app.post("/execute")
-    def execute(
+    async def execute(
         request: Execute, authorization: Annotated[str | None, Header()] = None
     ) -> Executed:
         tenant = authenticate(authorization)
@@ -128,15 +145,20 @@ def create_app(
             raise HTTPException(503, "Gateway has no core credential for this tenant")
         action = f"/actions/{request.action_id}"
         try:
-            claim = core_post(tenant, action + "/claim", None)
+            claim = await core_post(tenant, action + "/claim", None)
             if claim.status_code != 200:
                 raise HTTPException(409, "Core did not grant this action")
             grant = claim.json()["grant"]
-            consumed = core_post(tenant, action + "/consume", {"grant": grant, "adapter": "real"})
+            consumed = await core_post(
+                tenant, action + "/consume", {"grant": grant, "adapter": "real"}
+            )
             if consumed.status_code != 200:
                 raise HTTPException(409, "Core did not release this action for real dispatch")
             dispatch = consumed.json()
             expires = datetime.fromisoformat(dispatch["expires_at"])
+            if expires.utcoffset() is None:
+                raise ValueError("Lease expiration must include its time zone")
+            deadline = clock() + (expires - now()).total_seconds() - COMPLETION_RESERVE_SECONDS
             adapter, tool_key, destination = (
                 dispatch["adapter"],
                 dispatch["tool_key"],
@@ -159,22 +181,29 @@ def create_app(
         )
         if account is None:
             raise HTTPException(409, "No credential for this tenant, tool and destination")
-        remaining = (expires - now()).total_seconds() - COMPLETION_RESERVE_SECONDS
-        if remaining < 1:
-            raise HTTPException(409, "Not enough of the lease remains to call the provider")
-        timeout = min(remaining, MAX_PROVIDER_TIMEOUT_SECONDS)
+
+        def provider_budget() -> float:
+            remaining = deadline - clock()
+            if remaining < 1:
+                raise LeaseElapsed("Not enough of the lease remains to call the provider")
+            return min(remaining, MAX_PROVIDER_TIMEOUT_SECONDS)
 
         trace = dispatch.get("trace_id")
         try:
             effect: Effect
             if account.provider == "shopify":
-                effect = shopify.issue_refund(
-                    provider_client, str(account.endpoint), account.token, dispatch, timeout
+                effect = await shopify.issue_refund(
+                    provider_client, str(account.endpoint), account.token, dispatch, provider_budget
                 )
             else:
-                effect = gmail.send_reply(
-                    provider_client, account.destination, account.token, dispatch, timeout
+                effect = await gmail.send_reply(
+                    provider_client, account.destination, account.token, dispatch, provider_budget
                 )
+        except LeaseElapsed as error:
+            raise HTTPException(409, str(error)) from None
+        except ProviderFailed as error:
+            log.warning(json.dumps(_event("failed", request.action_id, tool_key, trace)))
+            raise HTTPException(422, {"status": "failed", "reason": str(error)}) from None
         except Refused as error:
             log.warning(json.dumps(_event("refused", request.action_id, tool_key, trace)))
             raise HTTPException(422, f"Not executed: {error}") from None
@@ -185,7 +214,7 @@ def create_app(
             ) from None
 
         try:
-            completed = core_post(
+            completed = await core_post(
                 tenant,
                 action + "/complete",
                 {"grant": grant, "adapter": "real", "external_ref": effect.external_ref},

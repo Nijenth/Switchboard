@@ -1,12 +1,16 @@
 """Shared rules for provider calls: timeouts, search retries, and outcome classes."""
 
+from asyncio import sleep
+from asyncio import timeout as request_timeout
+from collections.abc import Callable
 from dataclasses import dataclass
-from time import sleep
 from typing import Any
 
 import httpx
 
 SEARCH_ATTEMPTS = 3
+NO_EFFECT_STATUSES = {400, 401, 403, 404, 422}
+TimeBudget = Callable[[], float]
 
 
 class Refused(Exception):
@@ -15,6 +19,14 @@ class Refused(Exception):
 
 class UnknownOutcome(Exception):
     """A write may or may not have happened. Never retry; leave it to the reconciler."""
+
+
+class ProviderFailed(Exception):
+    """The provider recorded the attempt, and its transactions failed."""
+
+
+class LeaseElapsed(Refused):
+    """Too little time remains to start another request."""
 
 
 class _Unreadable(Exception):
@@ -39,12 +51,12 @@ def _json(response: httpx.Response) -> dict[str, Any]:
     return body
 
 
-def search(
-    client: httpx.Client,
+async def search(
+    client: httpx.AsyncClient,
     method: str,
     url: str,
     *,
-    timeout: float,
+    budget: TimeBudget,
     backoff: float = 0.5,
     **request: Any,
 ) -> dict[str, Any]:
@@ -53,11 +65,15 @@ def search(
     Raises Refused on any failure: no write has been attempted yet at this point.
     """
     for attempt in range(SEARCH_ATTEMPTS):
+        seconds = budget()
         try:
-            response = client.request(method, url, timeout=timeout, **request)
-        except httpx.HTTPError:
+            async with request_timeout(seconds):
+                response = await client.request(
+                    method, url, timeout=seconds, follow_redirects=False, **request
+                )
+        except (httpx.HTTPError, TimeoutError):
             response = None
-        if response is not None and response.status_code < 400:
+        if response is not None and response.is_success:
             try:
                 return _json(response)
             except _Unreadable:
@@ -65,26 +81,29 @@ def search(
         if response is not None and response.status_code != 429 and response.status_code < 500:
             raise Refused(f"Provider search was rejected with HTTP {response.status_code}")
         if attempt + 1 < SEARCH_ATTEMPTS:
-            sleep(backoff * 2**attempt)
+            await sleep(backoff * 2**attempt)
     raise Refused("Provider search failed after retries")
 
 
-def write(
-    client: httpx.Client, method: str, url: str, *, timeout: float, **request: Any
+async def write(
+    client: httpx.AsyncClient, method: str, url: str, *, budget: TimeBudget, **request: Any
 ) -> dict[str, Any]:
     """A call that changes provider state. Sent exactly once.
 
-    A 4xx other than 408 and 429 means the provider rejected it: Refused.
-    Anything else that is not a clean success is UnknownOutcome.
+    Only explicit no-effect statuses are refusals. The request is never retried.
     """
+    seconds = budget()
     try:
-        response = client.request(method, url, timeout=timeout, **request)
-    except httpx.HTTPError:
+        async with request_timeout(seconds):
+            response = await client.request(
+                method, url, timeout=seconds, follow_redirects=False, **request
+            )
+    except (httpx.HTTPError, TimeoutError):
         raise UnknownOutcome("No answer from the provider after sending the write") from None
     status = response.status_code
-    if 400 <= status < 500 and status not in (408, 429):
+    if status in NO_EFFECT_STATUSES:
         raise Refused(f"Provider rejected the write with HTTP {status}")
-    if status >= 300:
+    if not response.is_success:
         raise UnknownOutcome(f"Provider answered HTTP {status} to the write")
     try:
         return _json(response)

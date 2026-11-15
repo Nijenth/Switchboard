@@ -10,7 +10,15 @@ from typing import Any
 
 import httpx
 
-from gateway.providers import Effect, Refused, UnknownOutcome, search, write
+from gateway.providers import (
+    Effect,
+    ProviderFailed,
+    Refused,
+    TimeBudget,
+    UnknownOutcome,
+    search,
+    write,
+)
 
 ORDER_NUMBER = re.compile(r"[A-Za-z0-9#-]{1,40}")
 IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9:._-]{1,200}")
@@ -21,7 +29,11 @@ query SwitchboardFindOrder($query: String!) {
     nodes {
       id
       name
-      refunds { id note }
+      refunds {
+        id
+        note
+        transactions(first: 10) { nodes { status } pageInfo { hasNextPage } }
+      }
       transactions {
         id kind status gateway
         amountSet { shopMoney { amount currencyCode } }
@@ -32,9 +44,12 @@ query SwitchboardFindOrder($query: String!) {
 """
 
 CREATE_REFUND = """
-mutation SwitchboardRefund($input: RefundInput!) {
-  refundCreate(input: $input) {
-    refund { id }
+mutation SwitchboardRefund($input: RefundInput!, $key: String!) {
+  refundCreate(input: $input) @idempotent(key: $key) {
+    refund {
+      id
+      transactions(first: 10) { nodes { status } pageInfo { hasNextPage } }
+    }
     userErrors { field message }
   }
 }
@@ -52,8 +67,33 @@ def _graphql_data(body: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def issue_refund(
-    client: httpx.Client, endpoint: str, token: str, dispatch: dict[str, Any], timeout: float
+def _refund_effect(refund: dict[str, Any], *, reused: bool) -> Effect:
+    try:
+        external_ref = refund["id"]
+        transactions = refund["transactions"]
+        statuses = {transaction["status"] for transaction in transactions["nodes"]}
+        if (
+            not isinstance(external_ref, str)
+            or not external_ref
+            or not statuses
+            or transactions["pageInfo"]["hasNextPage"] is not False
+        ):
+            raise ValueError("Incomplete refund evidence")
+    except (KeyError, TypeError, ValueError):
+        raise UnknownOutcome("Shopify refund evidence was incomplete") from None
+    if statuses == {"SUCCESS"}:
+        return Effect(external_ref=external_ref, reused=reused)
+    if statuses <= {"ERROR", "FAILURE"}:
+        raise ProviderFailed("Shopify refund transactions failed")
+    raise UnknownOutcome("Shopify refund has an unsettled or mixed transaction status")
+
+
+async def issue_refund(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    token: str,
+    dispatch: dict[str, Any],
+    budget: TimeBudget,
 ) -> Effect:
     """Refund the approved amount once. ``dispatch`` is core's consumed-grant payload."""
     order_number = (dispatch.get("input") or {}).get("order_number")
@@ -75,11 +115,11 @@ def issue_refund(
         raise Refused("Approved payload is missing an order, key, currency or positive amount")
     headers = {"X-Shopify-Access-Token": token}
 
-    found = search(
+    found = await search(
         client,
         "POST",
         endpoint,
-        timeout=timeout,
+        budget=budget,
         headers=headers,
         json={"query": FIND_ORDER, "variables": {"query": f'name:"{order_number}"'}},
     )
@@ -90,9 +130,15 @@ def issue_refund(
         if len(orders) != 1:
             raise Refused("Order lookup did not return exactly one order")
         order = orders[0]
-        for refund in order["refunds"]:
-            if marker(key) in (refund.get("note") or "").split():
-                return Effect(external_ref=str(refund["id"]), reused=True)
+        matches = [
+            refund
+            for refund in order["refunds"]
+            if marker(key) in (refund.get("note") or "").split()
+        ]
+        if len(matches) > 1:
+            raise UnknownOutcome("Multiple Shopify refunds matched the idempotency key")
+        if matches:
+            return _refund_effect(matches[0], reused=True)
         payments = [
             item
             for item in order["transactions"]
@@ -108,15 +154,16 @@ def issue_refund(
     except (KeyError, TypeError, ValueError, InvalidOperation, AttributeError):
         raise Refused("Order lookup returned an unexpected shape") from None
 
-    created = write(
+    created = await write(
         client,
         "POST",
         endpoint,
-        timeout=timeout,
+        budget=budget,
         headers=headers,
         json={
             "query": CREATE_REFUND,
             "variables": {
+                "key": key,
                 "input": {
                     "orderId": order_id,
                     "note": f"Switchboard refund {marker(key)}",
@@ -130,15 +177,19 @@ def issue_refund(
                             "kind": "REFUND",
                         }
                     ],
-                }
+                },
             },
         },
     )
     try:
         result = _graphql_data(created)["refundCreate"]
-        if result["userErrors"]:
-            # Shopify validated and rejected the input. Nothing was refunded.
+        refund, errors = result["refund"], result["userErrors"]
+        if not isinstance(errors, list):
+            raise TypeError("Invalid user errors")
+        if errors:
+            if refund is not None:
+                raise UnknownOutcome("Shopify returned a refund record with user errors")
             raise Refused("Shopify rejected the refund input")
-        return Effect(external_ref=str(result["refund"]["id"]), reused=False)
+        return _refund_effect(refund, reused=False)
     except (KeyError, TypeError, ValueError):
         raise UnknownOutcome("Refund response had an unexpected shape") from None
