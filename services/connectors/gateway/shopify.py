@@ -22,6 +22,8 @@ from gateway.providers import (
 
 ORDER_NUMBER = re.compile(r"[A-Za-z0-9#-]{1,40}")
 IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9:._-]{1,200}")
+# Populated only from recorded sandbox responses (ADR 0032, "Write outcome rule").
+RECORDED_REFUSALS: frozenset[tuple[tuple[str, ...], str]] = frozenset()
 
 FIND_ORDER = """
 query SwitchboardFindOrder($query: String!) {
@@ -68,23 +70,17 @@ def _graphql_data(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _no_effect(error: Any) -> bool:
-    """True only for a user error that names the input field it rejects.
-
-    Shopify documents refundCreate's userErrors as ``field`` and ``message``.
-    Its idempotency errors (request in progress, key reused with other
-    parameters) carry ``field: null`` and a ``code``; an earlier request with
-    the same key may have taken effect, so those never mean nothing happened.
-    A ``code`` is not requested and none is known to mean a plain validation
-    error, so any error that carries one is treated the same way.
-    """
-    if not isinstance(error, dict) or error.get("code") is not None:
+    """True only when a user error matches a recorded sandbox refusal (ADR 0032)."""
+    if not isinstance(error, dict):
         return False
     path = error.get("field")
+    message = error.get("message")
     return (
         isinstance(path, list)
         and bool(path)
         and all(isinstance(part, str) and part for part in path)
-        and isinstance(error.get("message"), str)
+        and isinstance(message, str)
+        and (tuple(path), message) in RECORDED_REFUSALS
     )
 
 
@@ -151,11 +147,18 @@ async def issue_refund(
         if len(orders) != 1:
             raise Refused("Order lookup did not return exactly one order")
         order = orders[0]
-        matches = [
-            refund
-            for refund in order["refunds"]
-            if marker(key) in (refund.get("note") or "").split()
-        ]
+        refunds = order.get("refunds")
+        if not isinstance(refunds, list):
+            raise UnknownOutcome("Order lookup refunds had an unexpected shape")
+        matches: list[dict[str, Any]] = []
+        for refund in refunds:
+            if not isinstance(refund, dict):
+                raise UnknownOutcome("Order lookup refund entry had an unexpected shape")
+            note = refund.get("note")
+            if note is not None and not isinstance(note, str):
+                raise UnknownOutcome("Order lookup refund note had an unexpected shape")
+            if note and marker(key) in note.split():
+                matches.append(refund)
         if len(matches) > 1:
             raise UnknownOutcome("Multiple Shopify refunds matched the idempotency key")
         if matches:

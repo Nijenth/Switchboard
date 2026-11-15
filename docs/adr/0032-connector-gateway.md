@@ -60,6 +60,44 @@ binds a grant to the worker that claimed it. The grant never passes through n8n.
 
 AGENTS.md itself is not edited in this slice.
 
+### Write outcome rule
+
+*(Design note, third fix in the `Refused`-vs-`UnknownOutcome` class.)*
+
+Every gateway failure after `consume` maps to either `Refused` (HTTP 422, nothing
+was sent) or `UnknownOutcome` (HTTP 502, never retry; let the reconciler decide),
+except a parsed Shopify refund object whose transactions all settled to
+`ERROR`/`FAILURE` (`ProviderFailed`, HTTP 422 `{"status": "failed"}`) and an
+exhausted lease (`LeaseElapsed`, HTTP 409 before a provider request starts):
+
+1. **`Refused` is only for checks the gateway makes before any provider write is sent:**
+   configuration, remaining lease budget (`< 1s` raises `LeaseElapsed` -> HTTP 409),
+   payload and header validation, pre-write order/payment validation in Shopify, and a
+   duplicate search that failed before any write or clearly found no prior effect.
+2. **After a write is sent, everything that is not a clean, fully parsed success is
+   `UnknownOutcome` (HTTP 502)** (aside from `ProviderFailed` above), **including HTTP
+   `400` and `422` (and `401`, `403`, `404`) and every Shopify `userErrors` shape**,
+   unless it matches an entry in an explicit allow-list of **recorded** sandbox
+   refusals (`shopify.RECORDED_REFUSALS`).
+   - The allow-list starts empty (`frozenset()`).
+   - **How an entry gets added:** trigger the refusal against a real Shopify
+     development store (or test mailbox), save the recorded response fixture under
+     `services/connectors/tests/fixtures/`, add the exact `(tuple(field), message)`
+     tuple to `RECORDED_REFUSALS`, and add a regression test in
+     `services/connectors/tests/test_gateway.py` exercising that fixture.
+3. **Duplicate search:** any search answer suggesting an earlier send may exist or
+   that cannot be parsed as a clean "found nothing" — an entry without a valid
+   string `id`, a non-object entry, `resultSizeEstimate > 0` (or non-zero) or
+   `nextPageToken` with no usable `messages`, or `messages` not a list — raises
+   `UnknownOutcome` (HTTP 502), never `Refused`.
+4. **Pre-send strictness:** provider invariants are enforced strictly before
+   sending so avoidable mismatches are refused before any write:
+   - `draft.thread_id` must be lowercase hex (`[0-9a-f]+`); uppercase or non-hex
+     values are `Refused` before any provider call.
+   - `draft.subject` must equal `draft.thread_subject` byte-for-byte after stripping
+     leading `"Re: "` prefixes only (`^(?:Re: )+`, no case folding, no whitespace
+     normalisation); any other difference is `Refused` before any provider call.
+
 ### Provider rules
 
 | Tool | Provider call | Duplicate protection |
@@ -69,39 +107,34 @@ AGENTS.md itself is not edited in this slice.
 
 **`refundCreate` answers with `refund: null` and `userErrors`:**
 
-Shopify documents this mutation's `userErrors` as `[UserError!]!` with only
-`field` and `message`. Its idempotency guide shows the idempotency errors in
-`userErrors` with `field: null` and a `code`. The mutation does not request
-`code` (it is not on the documented type, and asking for an unknown field
-would fail every refund), but the gateway reads one if it is returned.
-
-| `userErrors` entry | Treated as | Why |
-|---|---|---|
-| `field` is a non-empty list of strings, `message` is a string, no `code` | `Refused` (HTTP 422) | It names the input field Shopify rejected: a validation error, so nothing was written. |
-| `code: IDEMPOTENCY_CONCURRENT_REQUEST` (`field: null`) | `UnknownOutcome` (HTTP 502) | An earlier request with this key is still in progress and may yet write the refund. |
-| `code: IDEMPOTENCY_KEY_PARAMETER_MISMATCH` (`field: null`) | `UnknownOutcome` | The key was used before with other parameters; that request may have taken effect. |
-| Any other `code` | `UnknownOutcome` | No code is known to mean a plain validation error. |
-| `field` null, empty or missing; no `message`; not an object | `UnknownOutcome` | Cannot be shown to mean "nothing happened". |
-
-All entries must be in the first row for the answer to be `Refused`. One
-entry from any other row makes the whole answer `UnknownOutcome`: it is not
-completed, the lease expires to `unknown_outcome`, and the reconciler looks
-for the refund by its note marker. A refund record returned together with
-`userErrors` stays `UnknownOutcome`, as before. The cost of this rule is that
-a real validation error Shopify reports without a field path is reconciled
-(to `failed`) instead of refused at once.
+Shopify documents `refundCreate`'s `userErrors` as `[UserError!]!` with `field`
+and `message`, and the mutation selects only `userErrors { field message }`.
+Synthetic shapes are never trusted to mean "nothing happened": `shopify.RECORDED_REFUSALS`
+starts empty, so every `userErrors` answer is `UnknownOutcome` (HTTP 502) unless
+`refund` is `null` and every entry is an object whose `(tuple(field), message)`
+matches an entry in `RECORDED_REFUSALS` (with non-empty string path segments and a
+string `message`). A refund record returned together with `userErrors` always stays
+`UnknownOutcome`. Until real sandbox refusals are recorded and allow-listed, any
+`userErrors` response expires to `unknown_outcome` and reconciles by the refund note
+marker.
 
 **Gmail thread checks:**
 
-- Before sending, the reply's `subject` must equal the draft's
-  `thread_subject` (the subject of the message being answered) after dropping
-  leading `Re:` prefixes (any case, repeated) and collapsing whitespace. Any
-  other difference, including `Fwd:`, is `Refused` with no provider call.
-  Gmail's documented threading rule needs the `threadId`, the `References` and
-  `In-Reply-To` headers, and a matching `Subject`.
+- Before sending, `draft.thread_id` must be lowercase hex (`[0-9a-f]+`), and the
+  reply's `subject` must equal the draft's `thread_subject` (the subject of the
+  message being answered) byte-for-byte after dropping leading `"Re: "` prefixes
+  only (exact case `"Re: "`, repeated, with no whitespace normalisation). Any other
+  difference, including `re:`, `RE:`, extra spaces, or `Fwd:`, is `Refused` with
+  no provider call. Gmail's documented threading rule needs the `threadId`, the
+  `References` and `In-Reply-To` headers, and a matching `Subject`.
+- On the `SENT` duplicate search, any response that cannot be parsed as a clean
+  empty result (`messages` not a list, `resultSizeEstimate != 0` or `nextPageToken`
+  with no usable `messages`, non-object entry, entry without a non-empty string
+  `id`, multiple entries, or a different/missing `threadId`) is `UnknownOutcome`
+  (HTTP 502), never `Refused`.
 - A send counts as executed only if the provider's message carries the
-  approved `threadId`. This applies to the send response and to a message
-  found by the `SENT` search. A different or missing `threadId` is
+  approved `threadId` and a non-empty string `id`. This applies to both the send
+  response and a message found by the `SENT` search. Any other response is
   `UnknownOutcome`: the message exists or may exist, so it is neither resent
   nor completed.
 
@@ -112,7 +145,7 @@ a real validation error Shopify reports without a field path is reconciled
 **Lease budget, search rules, and write refusal policy:**
 - Once `consume` returns `expires_at`, the gateway sets an absolute monotonic deadline leaving an 8-second completion reserve (`expires_at - 8s`). Before **every** provider call — including each search retry and the write — the gateway recalculates remaining budget (`min(remaining, 15s)`), fails closed with HTTP 409 if less than 1 second remains, and bounds the entire HTTP call with `asyncio.timeout` plus the client timeout.
 - Searches never follow redirects (`follow_redirects=False`) and accept only HTTP `2xx` JSON-object responses. Non-retryable statuses (`3xx` such as `302` with `{}` and `4xx` except `429`), unreadable bodies, or exhausting 3 attempts (`0.5s`, `1.0s` backoff) on `429`, `5xx`, or transport errors raise `Refused` (HTTP 422) without attempting a write.
-- Writes are sent **at most once** with `follow_redirects=False` and never retried. Only HTTP `400`, `401`, `403`, `404`, and `422` are treated as deterministic provider write refusals (`Refused` -> HTTP 422, no external effect). All other non-2xx statuses (`3xx`, `408`, `409`, `429`, `5xx`), transport errors, timeouts, and unreadable bodies raise `UnknownOutcome` (HTTP 502) and are **not** completed in core, so the lease expires to `unknown_outcome` and reconciles later (ADR 0006, ADR 0026).
+- Writes are sent **at most once** with `follow_redirects=False` and never retried. Once a write is sent, **every** non-2xx HTTP status (including `400`, `401`, `403`, `404`, and `422`, as well as `3xx`, `408`, `409`, `429`, and `5xx`), transport error, timeout, or unreadable body raises `UnknownOutcome` (HTTP 502) and is **not** completed in core, so the lease expires to `unknown_outcome` and reconciles later (ADR 0006, ADR 0026).
 
 ## What is deliberately not built here
 

@@ -268,44 +268,87 @@ def test_only_settled_refunds_are_completed(statuses: list[str], reused: bool) -
 IN_PROGRESS = {
     "field": None,
     "message": "This request is currently in progress, please try again.",
-    "code": "IDEMPOTENCY_CONCURRENT_REQUEST",
 }
 KEY_MISMATCH = {
     "field": None,
     "message": "The same idempotency key cannot be used with different operation parameters.",
-    "code": "IDEMPOTENCY_KEY_PARAMETER_MISMATCH",
 }
 NAMES_FIELD = {"field": ["transactions", "0", "amount"], "message": "Amount is too high"}
 
 
 @pytest.mark.parametrize(
-    ("errors", "status"),
+    "errors",
     [
-        # Names the rejected input field: nothing happened.
-        ([NAMES_FIELD], 422),
-        # Shopify's documented idempotency answers: an earlier request may have taken effect.
-        ([IN_PROGRESS], 502),
-        ([KEY_MISMATCH], 502),
-        # Anything that cannot be shown to mean "nothing happened".
-        ([{**NAMES_FIELD, "code": "SOME_NEW_CODE"}], 502),
-        ([{"field": None, "message": "Something went wrong"}], 502),
-        ([{"field": [], "message": "Something went wrong"}], 502),
-        ([{"message": "Something went wrong"}], 502),
-        (["not an object"], 502),
-        ([NAMES_FIELD, {"field": None, "message": "This request is in progress."}], 502),
+        [NAMES_FIELD],
+        [IN_PROGRESS],
+        [KEY_MISMATCH],
+        [{"field": None, "message": "Something went wrong"}],
+        [{"field": [], "message": "Something went wrong"}],
+        [{"message": "Something went wrong"}],
+        ["not an object"],
+        [NAMES_FIELD, {"field": None, "message": "This request is in progress."}],
     ],
 )
-def test_refund_user_errors_are_refused_only_when_they_name_an_input_field(
-    errors: list[Any], status: int
-) -> None:
+def test_refund_user_errors_are_unknown_until_recorded(errors: list[Any]) -> None:
     body = {"data": {"refundCreate": {"refund": None, "userErrors": errors}}}
     stub = Stub(refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=body)])
     result = run(stub)
-    assert result.status_code == status, result.text
-    if status == 502:
-        assert "outcome unknown" in result.json()["detail"]
+    assert result.status_code == 502, result.text
+    assert "outcome unknown" in result.json()["detail"]
     assert len(stub.provider_calls) == 2  # the write is never repeated
     assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+def test_recorded_refund_user_error_is_refused_only_when_exact_and_refund_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert shopify.RECORDED_REFUSALS == frozenset()
+    recorded = frozenset({(("transactions", "0", "amount"), "Amount is too high")})
+    monkeypatch.setattr(shopify, "RECORDED_REFUSALS", recorded)
+
+    refused_body = {"data": {"refundCreate": {"refund": None, "userErrors": [NAMES_FIELD]}}}
+    stub = Stub(
+        refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=refused_body)]
+    )
+    assert run(stub).status_code == 422
+    assert len(stub.provider_calls) == 2
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+    other_message = {
+        "data": {
+            "refundCreate": {
+                "refund": None,
+                "userErrors": [{"field": ["transactions", "0", "amount"], "message": "Other"}],
+            }
+        }
+    }
+    stub_other = Stub(
+        refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=other_message)]
+    )
+    assert run(stub_other).status_code == 502
+    assert not any(path.endswith("/complete") for path, *_ in stub_other.core_calls)
+
+    mixed_body = {
+        "data": {
+            "refundCreate": {
+                "refund": None,
+                "userErrors": [NAMES_FIELD, {"field": ["note"], "message": "Other error"}],
+            }
+        }
+    }
+    stub_mixed = Stub(
+        refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=mixed_body)]
+    )
+    assert run(stub_mixed).status_code == 502
+    assert not any(path.endswith("/complete") for path, *_ in stub_mixed.core_calls)
+
+    with_refund = fixture("shopify_refund_created.json")
+    with_refund["data"]["refundCreate"]["userErrors"] = [NAMES_FIELD]
+    stub_refund = Stub(
+        refund_dispatch(), [ok("shopify_order.json"), httpx.Response(200, json=with_refund)]
+    )
+    assert run(stub_refund).status_code == 502
+    assert not any(path.endswith("/complete") for path, *_ in stub_refund.core_calls)
 
 
 def test_refund_record_with_user_errors_is_unknown() -> None:
@@ -364,11 +407,43 @@ def test_write_timeout_shrinks_after_lookup() -> None:
 
 
 @pytest.mark.parametrize("status", [301, 400, 401, 403, 404, 408, 409, 422, 429, 503])
-def test_write_classification_uses_explicit_no_effect_statuses(status: int) -> None:
+def test_every_non_2xx_write_status_is_unknown_outcome(status: int) -> None:
     stub = Stub(refund_dispatch(), [ok("shopify_order.json"), httpx.Response(status)])
-    expected = 422 if status in {400, 401, 403, 404, 422} else 502
-    assert run(stub).status_code == expected
+    result = run(stub)
+    assert result.status_code == 502
+    assert "outcome unknown" in result.json()["detail"]
     assert len(stub.provider_calls) == 2
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize("status", [400, 422])
+def test_gmail_non_2xx_send_status_is_unknown_outcome(status: int) -> None:
+    stub = Stub(
+        reply_dispatch(),
+        [
+            httpx.Response(200, json={"messages": [], "resultSizeEstimate": 0}),
+            httpx.Response(status),
+        ],
+    )
+    result = run(stub)
+    assert result.status_code == 502
+    assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 2
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize(
+    "refunds",
+    [None, "not-a-list", ["not-an-object"], [{"id": "gid://shopify/Refund/1", "note": 123}]],
+)
+def test_unparseable_shopify_order_refunds_is_unknown_outcome(refunds: Any) -> None:
+    body = fixture("shopify_order.json")
+    body["data"]["orders"]["nodes"][0]["refunds"] = refunds
+    stub = Stub(refund_dispatch(), [httpx.Response(200, json=body)])
+    result = run(stub)
+    assert result.status_code == 502
+    assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 1
     assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
@@ -423,8 +498,10 @@ def test_caller_for_a_tenant_without_a_core_credential_is_refused() -> None:
     ("responses", "status"),
     [
         ([ok("shopify_no_order.json")], 422),
-        ([ok("shopify_order.json"), ok("shopify_refund_user_errors.json")], 422),
-        ([ok("shopify_order.json"), httpx.Response(401, json={})], 422),
+        ([ok("shopify_order.json"), ok("shopify_refund_user_errors.json")], 502),
+        ([ok("shopify_order.json"), httpx.Response(400, json={})], 502),
+        ([ok("shopify_order.json"), httpx.Response(401, json={})], 502),
+        ([ok("shopify_order.json"), httpx.Response(422, json={})], 502),
         ([ok("shopify_order.json"), httpx.Response(503, json={})], 502),
         ([ok("shopify_order.json"), httpx.ReadTimeout("timeout")], 502),
         ([ok("shopify_order.json"), httpx.Response(200, content=b"not json")], 502),
@@ -535,6 +612,8 @@ def test_refund_that_does_not_fit_the_payment_is_refused_before_the_write(
         {"channel": "web_chat"},
         {"thread_id": None},
         {"thread_id": "not-hex!"},
+        {"thread_id": "18F0ABC00000ABCD"},
+        {"thread_id": "18f0abc00000abcD"},
         {"in_reply_to": None},
         {"in_reply_to": "not-a-message-id"},
         {"references": "<a@example.com>\r\nBcc: evil@example.com <order-question@example.com>"},
@@ -544,6 +623,13 @@ def test_refund_that_does_not_fit_the_payment_is_refused_before_the_write(
         {"subject": "Fwd: Where is my order?"},
         {"subject": "Where is re: my order?"},
         {"subject": "Re: Where is my order? (urgent)"},
+        {"subject": "Re: Where is   my order?"},
+        {"subject": "Re:  Where is my order?"},
+        {"subject": "Re:Where is my order?"},
+        {"subject": "re: Where is my order?"},
+        {"subject": "RE: Where is my order?"},
+        {"subject": " Re: Where is my order?"},
+        {"subject": "Re: Where is my order? "},
         {"thread_subject": None},
         {"thread_subject": "Re: "},
         {"thread_subject": "Where is my order?\r\nBcc: evil@example.com"},
@@ -562,7 +648,8 @@ def test_unsendable_draft_is_refused_without_any_call(draft: dict[str, Any]) -> 
     ("subject", "original"),
     [
         ("Where is my order?", "Where is my order?"),
-        ("RE: re:  Where is   my order?", "Where is my order?"),
+        ("Re: Where is my order?", "Where is my order?"),
+        ("Re: Re: Where is my order?", "Where is my order?"),
         ("Re: Where is my order?", "Re: Where is my order?"),
     ],
 )
@@ -574,6 +661,37 @@ def test_reply_subject_may_differ_from_the_thread_only_by_reply_prefix(
     client, stub = provider_client([ok("gmail_search_empty.json"), ok("gmail_sent.json")])
     asyncio.run(gmail.send_reply(client, MAILBOX, MAIL_TOKEN, dispatch, lambda: 5))
     assert len(stub.provider_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"messages": [{"threadId": "18f0abc00000abcd"}], "resultSizeEstimate": 1},
+        {"messages": [{"id": "", "threadId": "18f0abc00000abcd"}], "resultSizeEstimate": 1},
+        {"messages": ["not-an-object"], "resultSizeEstimate": 1},
+        {"resultSizeEstimate": 1},
+        {"messages": [], "resultSizeEstimate": 1},
+        {"messages": [], "resultSizeEstimate": 0, "nextPageToken": "tok"},
+        {"resultSizeEstimate": 0, "nextPageToken": "tok"},
+        {"messages": "bad", "resultSizeEstimate": 0},
+        {"messages": None, "resultSizeEstimate": 0},
+        {},
+        {"resultSizeEstimate": False},
+        {
+            "messages": [
+                {"id": "1", "threadId": "18f0abc00000abcd"},
+                {"id": "2", "threadId": "18f0abc00000abcd"},
+            ],
+            "resultSizeEstimate": 2,
+        },
+    ],
+)
+def test_unparseable_gmail_duplicate_search_is_unknown_outcome(body: dict[str, Any]) -> None:
+    stub = Stub(reply_dispatch(), [httpx.Response(200, json=body)])
+    result = run(stub)
+    assert result.status_code == 502 and "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
 @pytest.mark.parametrize("thread", ["18f0dddd0000ffff", None])

@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 
 SEARCH_ATTEMPTS = 3
-NO_EFFECT_STATUSES = {400, 401, 403, 404, 422}
 TimeBudget = Callable[[], float]
 
 
@@ -90,7 +89,7 @@ async def write(
 ) -> dict[str, Any]:
     """A call that changes provider state. Sent exactly once.
 
-    Only explicit no-effect statuses are refusals. The request is never retried.
+    Any non-2xx status or unreadable body is an UnknownOutcome; the request is never retried.
     """
     seconds = budget()
     try:
@@ -100,11 +99,8 @@ async def write(
             )
     except (httpx.HTTPError, TimeoutError):
         raise UnknownOutcome("No answer from the provider after sending the write") from None
-    status = response.status_code
-    if status in NO_EFFECT_STATUSES:
-        raise Refused(f"Provider rejected the write with HTTP {status}")
     if not response.is_success:
-        raise UnknownOutcome(f"Provider answered HTTP {status} to the write")
+        raise UnknownOutcome(f"Provider answered HTTP {response.status_code} to the write")
     try:
         return _json(response)
     except _Unreadable:

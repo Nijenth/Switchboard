@@ -458,6 +458,59 @@ be an unhandled 500 instead of the 502 message.
   presence of `code` in `refundCreate` user errors; and that Shopify
   validation errors always carry a field path.
 
+### Write outcome rule fix pass (2026-11-15, branch frozen)
+
+- **Branch / status:** `build/03-gate3-grants` (one commit directly after `eb85372`;
+  `build/01-live-stack` and `build/02-live-console` untouched; nothing under
+  `services/core/app` changed). **After this commit, `build/03-gate3-grants` is
+  frozen until real sandbox recordings exist.**
+- **Rule written first (`docs/adr/0032-connector-gateway.md`, `### Write outcome rule`):**
+  Third fix in the `Refused`-vs-`UnknownOutcome` class:
+  1. `Refused` (HTTP 422) is strictly for checks made **before** any provider
+     write is sent (config, lease budget, payload/header validation, pre-write
+     order/payment checks, and a duplicate search that failed before any write or
+     clearly found nothing).
+  2. After a write is sent, everything that is not a clean, fully parsed success
+     (aside from settled `ERROR`/`FAILURE` refund transactions -> `ProviderFailed`)
+     is `UnknownOutcome` (HTTP 502), including HTTP `400` and `422` and every
+     Shopify `userErrors` shape, unless it matches `shopify.RECORDED_REFUSALS`
+     (which starts empty `frozenset()`). ADR 0032 records the rule for adding
+     entries: recorded sandbox fixture + `RECORDED_REFUSALS` entry + regression test.
+  3. Any duplicate search answer suggesting an earlier effect may exist or that
+     cannot be parsed as a clean empty result is `UnknownOutcome`, never `Refused`.
+  4. Pre-send strictness: `thread_id` must be lowercase hex (`[0-9a-f]+`);
+     `subject` must equal `thread_subject` byte-for-byte after stripping leading
+     `"Re: "` prefixes only (no case folding, no whitespace normalisation).
+- **Implemented:**
+  - `gateway/providers.py`: removed `NO_EFFECT_STATUSES`; all non-2xx write HTTP
+    responses now raise `UnknownOutcome`.
+  - `gateway/shopify.py`: added empty `RECORDED_REFUSALS`, removed the
+    unreachable `code` check from `_no_effect`, and made unparseable
+    `order["refunds"]` (non-list, non-dict entry, non-string `note`) raise
+    `UnknownOutcome`.
+  - `gateway/gmail.py`: enforced lowercase-hex `THREAD_ID`, byte-for-byte
+    `Re: ` prefix stripping without whitespace normalisation or case folding,
+    explicit CR/LF rejection on `subject`, and `UnknownOutcome` for all
+    unparseable `SENT` search shapes (entry without `id`, non-object entry,
+    `resultSizeEstimate != 0` or `nextPageToken` with no usable `messages`,
+    `messages` not a list, multiple entries, missing/mismatched `threadId`).
+  - `docs/runbook.md`: updated the `422 "Not executed: …"` meaning to
+    `Refused before anything was sent`.
+  - `services/connectors/tests/test_gateway.py`: removed tests that only
+    exercised the unreachable `code` branch and added tests for every case in
+    Codex's `eb85372` review.
+- **Results (`observed`, this Windows machine, final revision):**
+
+  | Check | Result |
+  |---|---|
+  | `services/connectors`: `ruff check .` | passed |
+  | `services/connectors`: `ruff format --check .` | 7 files already formatted |
+  | `services/connectors`: `mypy gateway` | no issues in 5 source files |
+  | `services/connectors`: `pytest -q` | 133 passed (stub core and synthetic fixtures; unverified against real Shopify/Gmail) |
+  | `python scripts/scan_secrets.py` | 0 findings |
+
+- **Not rerun:** the core suites, `db-check`, and `load_packs --check` (no files outside `services/connectors/` and `docs/` changed).
+
 ### Not verified — read this before trusting the adapters
 
 - **No request has ever been sent to Shopify or Google.** The request and
@@ -476,12 +529,12 @@ be an unhandled 500 instead of the 502 message.
 
 ### Owner must do
 
-1. Have Codex review ADR 0032 and the gateway, especially the refused/unknown
-   classification and the pre-provider checks.
+1. Branch `build/03-gate3-grants` is frozen until real sandbox recordings exist.
 2. Decide whether to update the AGENTS.md §2.1 table as ADR 0032 describes.
 3. Create a Shopify development store and a test Gmail mailbox; record real
    responses for each fixture file in `services/connectors/tests/fixtures/`
-   and replace the synthetic ones; fix any shape differences.
+   and replace the synthetic ones; fix any shape differences, and populate
+   `RECORDED_REFUSALS` only from recorded responses plus regression tests.
 4. Choose and configure the Shopify API version (there is no default).
 5. Commission, as its own reviewed slice: the migration that lets claim,
    consume, complete and reconcile work for `adapter = 'real'`; the claim

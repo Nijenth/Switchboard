@@ -16,14 +16,14 @@ from gateway.providers import Effect, Refused, TimeBudget, UnknownOutcome, searc
 
 ADDRESS = re.compile(r"[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,4}")
 API = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
-THREAD_ID = re.compile(r"[0-9a-fA-F]+")
+THREAD_ID = re.compile(r"[0-9a-f]+")
 MESSAGE_ID = re.compile(r"<[^<>\s@]+@[^<>\s@]+>")
-REPLY_PREFIX = re.compile(r"^(?:re:\s*)+", re.IGNORECASE)
+REPLY_PREFIX = re.compile(r"^(?:Re: )+")
 
 
 def thread_subject(subject: str) -> str:
-    """The subject Gmail threads on: leading "Re:" prefixes dropped, whitespace collapsed."""
-    return " ".join(REPLY_PREFIX.sub("", subject.strip(), count=1).split())
+    """The subject Gmail threads on: leading 'Re: ' prefixes dropped, nothing else changed."""
+    return REPLY_PREFIX.sub("", subject, count=1)
 
 
 def message_id(mailbox: str, idempotency_key: str) -> str:
@@ -60,6 +60,8 @@ async def send_reply(
         or not ADDRESS.fullmatch(mailbox)
         or not isinstance(subject, str)
         or not subject.strip()
+        or "\r" in subject
+        or "\n" in subject
         or not isinstance(thread_id, str)
         or not THREAD_ID.fullmatch(thread_id)
         or not isinstance(parent, str)
@@ -75,7 +77,7 @@ async def send_reply(
     # Gmail only keeps a reply in its thread when the subjects match.
     if (
         not isinstance(original, str)
-        or not thread_subject(original)
+        or not thread_subject(original).strip()
         or "\r" in original
         or "\n" in original
         or thread_subject(subject) != thread_subject(original)
@@ -105,19 +107,18 @@ async def send_reply(
         params={"q": f"rfc822msgid:{identifier.strip('<>')}", "labelIds": "SENT", "maxResults": 1},
     )
     existing = found.get("messages", [])
+    estimate = found.get("resultSizeEstimate")
     if not isinstance(existing, list) or (
-        not existing and (found.get("resultSizeEstimate") != 0 or found.get("nextPageToken"))
+        not existing and (type(estimate) is not int or estimate != 0 or found.get("nextPageToken"))
     ):
-        raise Refused("Message search returned an unexpected shape")
+        raise UnknownOutcome("Message search returned an unexpected shape")
     if existing:
-        try:
-            external_ref = existing[0]["id"]
-            if not isinstance(external_ref, str) or not external_ref:
-                raise ValueError("Invalid message ID")
-            found_thread = existing[0].get("threadId")
-        except (KeyError, TypeError, IndexError, ValueError, AttributeError):
-            raise Refused("Message search returned an unexpected shape") from None
-        if found_thread != thread_id:
+        if len(existing) != 1 or not isinstance(existing[0], dict):
+            raise UnknownOutcome("Message search returned an unexpected shape")
+        external_ref = existing[0].get("id")
+        if not isinstance(external_ref, str) or not external_ref:
+            raise UnknownOutcome("Message search returned an unexpected shape")
+        if existing[0].get("threadId") != thread_id:
             # The message exists, but not where the approved reply belongs.
             raise UnknownOutcome("Earlier send is not in the approved thread")
         return Effect(external_ref=external_ref, reused=True)
