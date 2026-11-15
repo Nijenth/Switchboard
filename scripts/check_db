@@ -66,10 +66,21 @@ pg_ctl --pgdata="$data_dir" --log="$check_dir/postgres.log" --wait \
 
 bash scripts/create_db_users
 bash scripts/migrate
+if [[ $(db_psql -qAt --command "SELECT to_regclass('public.demo_case_timeline') IS NULL") != t ]]; then
+    printf 'Migrate-only database must not contain the demo timeline\n' >&2
+    exit 1
+fi
 bash scripts/seed
 
 if [[ -n $listen_addresses ]]; then
-    db_psql --single-transaction --file=db/tests/check_fixtures.sql
+    db_psql --single-transaction --file=db/tests/check_fixtures.sql --file=db/tests/demo_case_timeline.sql
+    if [[ $(db_psql_as switchboard_reporting "$SWITCHBOARD_REPORTING_PASSWORD" switchboard_test -qAt \
+        --command "SELECT count(*) = 1 AND count(body_redacted) = 0 AND count(draft_body) = 0
+          FROM public.demo_case_timeline
+         WHERE case_id='92000000-0000-0000-0000-000000000001' AND event_kind='message'") != t ]]; then
+        printf 'Reporting login cannot read the disposable demo timeline fixture\n' >&2
+        exit 1
+    fi
     printf 'Core integration database ready\n'
     sleep infinity &
     wait "$!"

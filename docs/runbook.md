@@ -38,6 +38,13 @@ workflow. Mock dispatch covers replies and approved order refunds.
 Run `bash scripts/test_core.sh --offline-n8n` with the pinned images already cached to
 exercise the synthetic email through Slack and the mock receipt.
 
+To capture the offline replay, set `SWITCHBOARD_DEMO_REPORT` to an absolute
+output path before the offline n8n run. The exporter uses the reporting login
+and the text view installed only in the disposable integration cluster. A
+scene mismatch means its badge is unsupported by the recorded evidence.
+Check the named scene and rerun the harness to capture a fresh recording.
+[Demo commands](demo.md#generate-the-offline-replay)
+
 ## Pack lookups and identity (ADRs 0019, 0021, 0022, 0023)
 
 Set `SWITCHBOARD_LOOKUP_CREDENTIALS` to a JSON list of tenant IDs and tokens. After

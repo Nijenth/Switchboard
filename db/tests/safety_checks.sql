@@ -18,6 +18,21 @@ SELECT pg_temp.expect_value('schema owner owns cases and lacks superuser, role c
        FROM pg_catalog.pg_class c CROSS JOIN pg_catalog.pg_roles r
       WHERE c.oid = 'public.cases'::regclass AND r.rolname = session_user$q$, 'true');
 
+SELECT pg_temp.expect_value('timeline projects only its approved columns',
+  $q$SELECT array_agg(column_name::text ORDER BY ordinal_position)::text
+       FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='v_case_timeline'$q$,
+  '{case_id,tenant_id,created_at,event_kind,intent,confidence,flags,tool_key,status,result_reason,rule_id,rule_source,decision,risk_level,amount,currency,required_role,audit_event,audit_sequence}');
+SELECT pg_temp.expect_value('only the reporting application role may select the timeline',
+  $q$SELECT (has_table_privilege('app_reporting','public.v_case_timeline','SELECT')
+        AND NOT has_table_privilege('app_core','public.v_case_timeline','SELECT')
+        AND NOT has_table_privilege('app_config_loader','public.v_case_timeline','SELECT')
+        AND NOT has_table_privilege('app_n8n_mock','public.v_case_timeline','SELECT'))::text$q$, 'true');
+SELECT pg_temp.expect_value('reporting has no readable columns on raw timeline sources',
+  $q$SELECT bool_and(NOT has_any_column_privilege('app_reporting','public.' || source,'SELECT'))::text
+       FROM unnest(ARRAY['cases','messages','classifications','actions','policy_decisions',
+         'drafts','approval_requests','approval_decisions','audit_log','extractions']) source$q$, 'true');
+
 \echo
 \echo '== 1. Data integrity & tenant consistency =='
 SELECT pg_temp.expect_error('duplicate webhook is rejected (idempotency)',
