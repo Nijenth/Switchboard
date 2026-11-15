@@ -283,31 +283,51 @@ Things worth reading rather than running: the fail-closed checks in
 | `db-check` (SQL) | exit 0; 301 PASS lines, 0 FAIL lines |
 | `test_core.sh` | 167 passed, 18 skipped |
 | `test_core.sh --offline-ai` | 184 passed, 1 skipped |
-| `test_core.sh --offline-n8n` | **first run: 1 failed, 184 passed. Second run: 185 passed.** See below. |
+| `test_core.sh --offline-n8n` | With the slice 2 test: 3 of 5 runs passed (see below). With the follow-up test change: 5 of 5 runs, 185 passed each. |
 
-### Intermittent failure seen once (affects slice 2's test, not this slice's code)
+### Intermittent n8n timeout in the console test (slice 2's test; follow-up commit on this branch)
 
-On the first `--offline-n8n` run for this slice, the console block added in
-slice 2 failed at `tests/test_n8n_outbound.py` "decided.status_code == 200":
-the dispatch run after the console's approval exited 1 with an HTTP timeout
-(`AxiosError`, `createTimeoutError`) at the "Consume grant" node, which has a
-5-second timeout to core. That whole run was slow (340 s against the usual
-260 s). The identical code passed on the slice 2 run and on an immediate
-rerun here. This slice changed nothing under `services/core`.
+**What was observed.** With the console block of `tests/test_n8n_outbound.py`
+driving the console through the in-process `TestClient` (as committed in
+slice 2), `--offline-n8n` gave:
 
-- **Observed:** 1 failure in 3 runs of that block.
-- **Cause:** not established. The slow run points at this machine or Docker
-  Desktop being loaded after many stack start/stop cycles in one session, but
-  that is a guess, not a finding.
-- **Not done:** I did not change any timeout or add a retry to make it pass.
-- **Related gap, found by reading (inferred, not observed):** an n8n CLI run
-  that exceeds its 100-second limit raises `subprocess.TimeoutExpired`, which
-  `LiveStack.n8n` does not convert to `StackError`. In the console that would
-  surface as an unhandled 500 instead of the 502 message. Worth fixing in
-  slice 1's code during review.
-- **Owner/Codex:** run `--offline-n8n` a few times on a quiet machine. If the
-  timeout recurs, treat it as a real defect in how the console drives
-  dispatch and investigate before merging slice 2.
+| Run | Result | Where |
+|---|---|---|
+| slice 2 final run | 185 passed | |
+| slice 3 run 1 | 1 failed | console approve → dispatch, HTTP timeout at "Consume grant" |
+| slice 3 run 2 | 185 passed | |
+| slice 3 run 3 | 1 failed | console send → Slack posting workflow, HTTP timeout |
+| slice 3 run 4 | 185 passed | |
+
+So 2 failures in 5 runs. Both were an n8n → core HTTP timeout (the nodes
+allow core 5 seconds), both inside the console block, at different steps. The
+second failing run was not slow, so machine load does not explain it. In the
+same runs, the hundreds of n8n calls the test makes directly never timed out.
+
+**What I changed (one change, test only).** The console block now talks to
+the console over real HTTP on a loopback port (`serve` + `httpx`), which is
+how the browser uses it. No timeout was raised and no retry was added.
+
+**Result.** 5 runs, 5 × 185 passed. Together with the browser session in
+slice 2 (seven real-HTTP console steps, no failure), the evidence points at
+the in-process test client as the trigger.
+
+**What this does not prove.**
+
+- **Cause: not established.** I do not know why driving the console through
+  `TestClient` makes core slow to answer n8n. This is an inference from 5
+  clean runs after 2 failures in 5; with a true failure rate of 40%, 5 clean
+  runs would still happen about 8% of the time by chance.
+- If the timeout ever appears with the real-HTTP test or in a live console
+  session, it is a real defect in the console path. Stop and investigate; do
+  not raise the 5-second node timeout to hide it. Per the "second fix in the
+  same failure class" rule, the next step would be a design note, not
+  another change.
+
+**Related gap found by reading (inferred, not observed):** an n8n CLI run that
+exceeds its 100-second limit raises `subprocess.TimeoutExpired`, which
+`LiveStack.n8n` does not convert to `StackError`. In the console that would
+be an unhandled 500 instead of the 502 message. Not fixed here.
 
 ### Not verified — read this before trusting the adapters
 
