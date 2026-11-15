@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Live demo stack on a disposable database with mock adapters and the fake model (ADR 0030).
+#   scripts/demo_live up [--smoke]   start and hold the stack in this terminal
+#   scripts/demo_live down           stop it from another terminal, or clean up after a crash
+#   scripts/demo_live status
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+python=python
+for candidate in "$PWD/.venv/Scripts/python.exe" "$PWD/.venv/bin/python"; do
+    if [[ -x $candidate ]]; then
+        python=$candidate
+        break
+    fi
+done
+harness() (
+    cd services/core
+    "$python" -m harness.demo_live "$@"
+)
+usage() {
+    printf 'Usage: scripts/demo_live up [--smoke] | down | status\n' >&2
+    exit 2
+}
+
+case "${1:-}" in
+    up)
+        for flag in "${@:2}"; do
+            [[ $flag == --smoke ]] || usage
+        done
+        # Ownership first: nothing is created unless this run holds the state file,
+        # and the state file already names everything this run will create.
+        container=$(harness claim)
+        finish() {
+            local status=$?
+            trap - EXIT
+            if [[ ${database_started:-false} == true ]]; then
+                core_stack_cleanup || true
+            fi
+            # Deletes the state file only when nothing this run named still exists.
+            harness release || status=1
+            exit "$status"
+        }
+        trap finish EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        source scripts/test_db_env.sh
+        source scripts/core_stack.sh
+        printf 'Creating the disposable database and offline AI gateway\n'
+        database_started=true
+        core_stack_start true "$container" no-traps
+        harness "$@"
+        ;;
+    down | status)
+        [[ $# == 1 ]] || usage
+        harness "$1"
+        ;;
+    *) usage ;;
+esac

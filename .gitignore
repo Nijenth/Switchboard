@@ -16,3 +16,6 @@ __pycache__/
 .ruff_cache/
 .coverage
 /demo-report.html
+
+# live demo stack state (names and a heartbeat; ADR 0030)
+/.demo-live/

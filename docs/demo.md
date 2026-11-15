@@ -49,6 +49,18 @@ The replay includes seven scenes, plus a title and a claims screen. It uses
 the recorded mock run and works offline. The script exports before removing
 the disposable database. The default filename is ignored by Git.
 
+## Keep the stack up for live input
+
+```bash
+bash scripts/demo_live up --smoke
+```
+
+This holds the same mock stack up in the terminal until you press Ctrl+C or
+run `bash scripts/demo_live down` from another terminal. `--smoke` sends one
+message that is not in the recorded fixture ("Where is my order NW-1002?")
+and prints its decision and reply. See the
+[runbook](runbook.md#live-demo-stack-adr-0030) for failures.
+
 The automated run is the repeatable send path. Read the messages aloud as you
 show the evidence indicated below. The receipt and audit checks use generated
 IDs, so use the order numbers and event names to connect each scene.
