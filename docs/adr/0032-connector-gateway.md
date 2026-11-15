@@ -76,18 +76,23 @@ exhausted lease (`LeaseElapsed`, HTTP 409 before a provider request starts):
    duplicate search that failed before any write or clearly found no prior effect.
 2. **After a write is sent, everything that is not a clean, fully parsed success is
    `UnknownOutcome` (HTTP 502)** (aside from `ProviderFailed` above), **including HTTP
-   `400` and `422` (and `401`, `403`, `404`) and every Shopify `userErrors` shape**,
-   unless it matches an entry in an explicit allow-list of **recorded** sandbox
-   refusals (`shopify.RECORDED_REFUSALS`).
+   `400` and `422` (and `401`, `403`, `404`), unreadable bodies (any JSON decoder
+   failure including `RecursionError`, or non-object JSON), and every Shopify
+   `userErrors` shape**, unless it matches an entry in an explicit allow-list of
+   **recorded** sandbox refusals (`shopify.RECORDED_REFUSALS`).
    - The allow-list starts empty (`frozenset()`).
    - **How an entry gets added:** trigger the refusal against a real Shopify
      development store (or test mailbox), save the recorded response fixture under
      `services/connectors/tests/fixtures/`, add the exact `(tuple(field), message)`
      tuple to `RECORDED_REFUSALS`, and add a regression test in
      `services/connectors/tests/test_gateway.py` exercising that fixture.
-3. **Duplicate search:** any search answer suggesting an earlier send may exist or
-   that cannot be parsed as a clean "found nothing" — an entry without a valid
-   string `id`, a non-object entry, `resultSizeEstimate > 0` (or non-zero) or
+3. **Duplicate search:** any duplicate-search `2xx` response with an unreadable
+   body (any JSON decoder failure including `RecursionError`, or non-object JSON)
+   or any answer suggesting an earlier effect may exist or that cannot be parsed as
+   a clean "found nothing" — including an unparseable Shopify GraphQL
+   `orders`/`refunds` structure, an existing Shopify refund entry whose `note` is
+   missing or not a string, or a Gmail search with an entry without a valid string
+   `id`, a non-object entry, `resultSizeEstimate > 0` (or non-zero) or
    `nextPageToken` with no usable `messages`, or `messages` not a list — raises
    `UnknownOutcome` (HTTP 502), never `Refused`.
 4. **Pre-send strictness:** provider invariants are enforced strictly before
@@ -127,11 +132,11 @@ marker.
   difference, including `re:`, `RE:`, extra spaces, or `Fwd:`, is `Refused` with
   no provider call. Gmail's documented threading rule needs the `threadId`, the
   `References` and `In-Reply-To` headers, and a matching `Subject`.
-- On the `SENT` duplicate search, any response that cannot be parsed as a clean
-  empty result (`messages` not a list, `resultSizeEstimate != 0` or `nextPageToken`
-  with no usable `messages`, non-object entry, entry without a non-empty string
-  `id`, multiple entries, or a different/missing `threadId`) is `UnknownOutcome`
-  (HTTP 502), never `Refused`.
+- On the `SENT` duplicate search, an unreadable `2xx` body or any response that
+  cannot be parsed as a clean empty result (`messages` not a list,
+  `resultSizeEstimate != 0` or `nextPageToken` with no usable `messages`,
+  non-object entry, entry without a non-empty string `id`, multiple entries, or a
+  different/missing `threadId`) is `UnknownOutcome` (HTTP 502), never `Refused`.
 - A send counts as executed only if the provider's message carries the
   approved `threadId` and a non-empty string `id`. This applies to both the send
   response and a message found by the `SENT` search. Any other response is
@@ -144,8 +149,8 @@ marker.
 
 **Lease budget, search rules, and write refusal policy:**
 - Once `consume` returns `expires_at`, the gateway sets an absolute monotonic deadline leaving an 8-second completion reserve (`expires_at - 8s`). Before **every** provider call — including each search retry and the write — the gateway recalculates remaining budget (`min(remaining, 15s)`), fails closed with HTTP 409 if less than 1 second remains, and bounds the entire HTTP call with `asyncio.timeout` plus the client timeout.
-- Searches never follow redirects (`follow_redirects=False`) and accept only HTTP `2xx` JSON-object responses. Non-retryable statuses (`3xx` such as `302` with `{}` and `4xx` except `429`), unreadable bodies, or exhausting 3 attempts (`0.5s`, `1.0s` backoff) on `429`, `5xx`, or transport errors raise `Refused` (HTTP 422) without attempting a write.
-- Writes are sent **at most once** with `follow_redirects=False` and never retried. Once a write is sent, **every** non-2xx HTTP status (including `400`, `401`, `403`, `404`, and `422`, as well as `3xx`, `408`, `409`, `429`, and `5xx`), transport error, timeout, or unreadable body raises `UnknownOutcome` (HTTP 502) and is **not** completed in core, so the lease expires to `unknown_outcome` and reconciles later (ADR 0006, ADR 0026).
+- Searches never follow redirects (`follow_redirects=False`) and accept only HTTP `2xx` JSON-object responses. Non-retryable statuses (`3xx` such as `302` with `{}` and `4xx` except `429`) or exhausting 3 attempts (`0.5s`, `1.0s` backoff) on `429`, `5xx`, or transport errors raise `Refused` (HTTP 422) without attempting a write. An HTTP `2xx` search response with an unreadable body (invalid JSON, any decoder failure including `RecursionError`, or non-object JSON) or a duplicate-check payload that cannot be parsed as a clean "found nothing" (including a Shopify refund entry with a missing or non-string `note`) raises `UnknownOutcome` (HTTP 502) without attempting a write.
+- Writes are sent **at most once** with `follow_redirects=False` and never retried. Once a write is sent, **every** non-2xx HTTP status (including `400`, `401`, `403`, `404`, and `422`, as well as `3xx`, `408`, `409`, `429`, and `5xx`), transport error, timeout, or unreadable body (invalid JSON, any decoder failure including `RecursionError`, or non-object JSON) raises `UnknownOutcome` (HTTP 502) and is **not** completed in core, so the lease expires to `unknown_outcome` and reconciles later (ADR 0006, ADR 0026).
 
 ## What is deliberately not built here
 

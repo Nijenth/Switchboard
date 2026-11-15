@@ -43,7 +43,7 @@ class Effect:
 def _json(response: httpx.Response) -> dict[str, Any]:
     try:
         body = response.json()
-    except ValueError:
+    except Exception:  # noqa: BLE001 - treat any decoder failure (e.g. RecursionError) as unreadable
         body = None
     if not isinstance(body, dict):
         raise _Unreadable
@@ -61,7 +61,8 @@ async def search(
 ) -> dict[str, Any]:
     """A call that changes nothing. Retries on 429 and 5xx with exponential backoff.
 
-    Raises Refused on any failure: no write has been attempted yet at this point.
+    Raises Refused if the search fails before receiving a 2xx body, or UnknownOutcome
+    if a 2xx response body is unreadable.
     """
     for attempt in range(SEARCH_ATTEMPTS):
         seconds = budget()
@@ -76,7 +77,7 @@ async def search(
             try:
                 return _json(response)
             except _Unreadable:
-                raise Refused("Provider search returned an unreadable body") from None
+                raise UnknownOutcome("Provider search returned an unreadable body") from None
         if response is not None and response.status_code != 429 and response.status_code < 500:
             raise Refused(f"Provider search was rejected with HTTP {response.status_code}")
         if attempt + 1 < SEARCH_ATTEMPTS:

@@ -432,9 +432,19 @@ def test_gmail_non_2xx_send_status_is_unknown_outcome(status: int) -> None:
     assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
+DEEP_JSON = b"[" * 10000 + b"]" * 10000
+
+
 @pytest.mark.parametrize(
     "refunds",
-    [None, "not-a-list", ["not-an-object"], [{"id": "gid://shopify/Refund/1", "note": 123}]],
+    [
+        None,
+        "not-a-list",
+        ["not-an-object"],
+        [{"id": "gid://shopify/Refund/1"}],
+        [{"id": "gid://shopify/Refund/1", "note": None}],
+        [{"id": "gid://shopify/Refund/1", "note": 123}],
+    ],
 )
 def test_unparseable_shopify_order_refunds_is_unknown_outcome(refunds: Any) -> None:
     body = fixture("shopify_order.json")
@@ -444,6 +454,77 @@ def test_unparseable_shopify_order_refunds_is_unknown_outcome(refunds: Any) -> N
     assert result.status_code == 502
     assert "outcome unknown" in result.json()["detail"]
     assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+def test_well_formed_non_matching_shopify_refund_allows_write() -> None:
+    body = fixture("shopify_order.json")
+    body["data"]["orders"]["nodes"][0]["refunds"] = [
+        {"id": "gid://shopify/Refund/1", "note": "manual adjustment"}
+    ]
+    stub = Stub(
+        refund_dispatch(), [httpx.Response(200, json=body), ok("shopify_refund_created.json")]
+    )
+    result = run(stub)
+    assert result.status_code == 200
+    assert result.json()["external_ref"] == "gid://shopify/Refund/9002"
+    assert len(stub.provider_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"errors": [{"message": "boom"}]},
+        {"data": {"orders": None}},
+        {"data": {"orders": {"nodes": "bad"}}},
+        {"data": {"orders": {"nodes": ["not-an-object"]}}},
+        {"data": {"orders": {"nodes": [{}]}}},
+    ],
+)
+def test_unparseable_shopify_order_lookup_envelope_is_unknown_outcome(
+    body: dict[str, Any],
+) -> None:
+    stub = Stub(refund_dispatch(), [httpx.Response(200, json=body)])
+    result = run(stub)
+    assert result.status_code == 502
+    assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize("make_dispatch", [refund_dispatch, reply_dispatch])
+@pytest.mark.parametrize(
+    "body",
+    [b"not json", b'["not", "an", "object"]', DEEP_JSON],
+    ids=["invalid-json", "json-list", "recursion-error"],
+)
+def test_unreadable_duplicate_search_body_is_unknown_outcome(
+    make_dispatch: Callable[..., dict[str, Any]], body: bytes
+) -> None:
+    stub = Stub(make_dispatch(), [httpx.Response(200, content=body)])
+    result = run(stub)
+    assert result.status_code == 502
+    assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 1
+    assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
+
+
+@pytest.mark.parametrize(
+    ("make_dispatch", "search_ok"),
+    [
+        (refund_dispatch, "shopify_order.json"),
+        (reply_dispatch, "gmail_search_empty.json"),
+    ],
+)
+def test_deeply_nested_write_response_is_unknown_outcome(
+    make_dispatch: Callable[..., dict[str, Any]], search_ok: str
+) -> None:
+    stub = Stub(make_dispatch(), [ok(search_ok), httpx.Response(200, content=DEEP_JSON)])
+    result = run(stub)
+    assert result.status_code == 502
+    assert "outcome unknown" in result.json()["detail"]
+    assert len(stub.provider_calls) == 2
     assert not any(path.endswith("/complete") for path, *_ in stub.core_calls)
 
 
@@ -505,6 +586,7 @@ def test_caller_for_a_tenant_without_a_core_credential_is_refused() -> None:
         ([ok("shopify_order.json"), httpx.Response(503, json={})], 502),
         ([ok("shopify_order.json"), httpx.ReadTimeout("timeout")], 502),
         ([ok("shopify_order.json"), httpx.Response(200, content=b"not json")], 502),
+        ([ok("shopify_order.json"), httpx.Response(200, content=DEEP_JSON)], 502),
     ],
 )
 def test_refused_and_unknown_outcomes_are_never_completed_or_retried(

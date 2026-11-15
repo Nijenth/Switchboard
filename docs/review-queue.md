@@ -460,45 +460,60 @@ be an unhandled 500 instead of the 502 message.
 
 ### Write outcome rule fix pass (2026-11-15, branch frozen)
 
-- **Branch / status:** `build/03-gate3-grants` (one commit directly after `eb85372`;
-  `build/01-live-stack` and `build/02-live-console` untouched; nothing under
-  `services/core/app` changed). **After this commit, `build/03-gate3-grants` is
-  frozen until real sandbox recordings exist.**
+- **Branch / status:** `build/03-gate3-grants` (`8cf0875` plus one final follow-up
+  commit addressing Codex's review of `8cf0875`; `build/01-live-stack` and
+  `build/02-live-console` untouched; nothing under `services/core/app` changed).
+  **After this commit, `build/03-gate3-grants` is frozen until real sandbox
+  recordings exist.**
 - **Rule written first (`docs/adr/0032-connector-gateway.md`, `### Write outcome rule`):**
   Third fix in the `Refused`-vs-`UnknownOutcome` class:
   1. `Refused` (HTTP 422) is strictly for checks made **before** any provider
      write is sent (config, lease budget, payload/header validation, pre-write
-     order/payment checks, and a duplicate search that failed before any write or
-     clearly found nothing).
+     order/payment checks, and a duplicate search that failed before receiving a
+     `2xx` body or clearly found nothing).
   2. After a write is sent, everything that is not a clean, fully parsed success
      (aside from settled `ERROR`/`FAILURE` refund transactions -> `ProviderFailed`)
-     is `UnknownOutcome` (HTTP 502), including HTTP `400` and `422` and every
-     Shopify `userErrors` shape, unless it matches `shopify.RECORDED_REFUSALS`
-     (which starts empty `frozenset()`). ADR 0032 records the rule for adding
-     entries: recorded sandbox fixture + `RECORDED_REFUSALS` entry + regression test.
-  3. Any duplicate search answer suggesting an earlier effect may exist or that
-     cannot be parsed as a clean empty result is `UnknownOutcome`, never `Refused`.
+     is `UnknownOutcome` (HTTP 502), including HTTP `400` and `422`, unreadable
+     bodies (any JSON decoder failure including `RecursionError`, or non-object
+     JSON), and every Shopify `userErrors` shape, unless it matches
+     `shopify.RECORDED_REFUSALS` (which starts empty `frozenset()`). ADR 0032
+     records the rule for adding entries: recorded sandbox fixture +
+     `RECORDED_REFUSALS` entry + regression test.
+  3. Any duplicate-search `2xx` response with an unreadable body (any JSON
+     decoder failure including `RecursionError`, or non-object JSON) or any
+     answer suggesting an earlier effect may exist or that cannot be parsed as a
+     clean "found nothing" is `UnknownOutcome` (HTTP 502), never `Refused`.
   4. Pre-send strictness: `thread_id` must be lowercase hex (`[0-9a-f]+`);
      `subject` must equal `thread_subject` byte-for-byte after stripping leading
      `"Re: "` prefixes only (no case folding, no whitespace normalisation).
-- **Implemented:**
-  - `gateway/providers.py`: removed `NO_EFFECT_STATUSES`; all non-2xx write HTTP
-    responses now raise `UnknownOutcome`.
+- **Implemented (`8cf0875` and final review fix):**
+  - `gateway/providers.py`: removed `NO_EFFECT_STATUSES` so all non-2xx write
+    HTTP responses raise `UnknownOutcome`; updated `_json` to catch `Exception`
+    (`# noqa: BLE001`, including `RecursionError`) instead of `ValueError` only;
+    updated `search` so an unreadable `2xx` response body raises
+    `UnknownOutcome` instead of `Refused`.
   - `gateway/shopify.py`: added empty `RECORDED_REFUSALS`, removed the
-    unreachable `code` check from `_no_effect`, and made unparseable
-    `order["refunds"]` (non-list, non-dict entry, non-string `note`) raise
-    `UnknownOutcome`.
+    unreachable `code` check from `_no_effect`, separated `FIND_ORDER` GraphQL
+    envelope/node parsing into `UnknownOutcome` (keeping `len(orders) != 1` and
+    subsequent payment checks as `Refused`), and required `order["refunds"]` to
+    be a list of dicts each with a `str` `note` (missing, `None`, or non-string
+    `note` raises `UnknownOutcome` and never calls `refundCreate`).
   - `gateway/gmail.py`: enforced lowercase-hex `THREAD_ID`, byte-for-byte
     `Re: ` prefix stripping without whitespace normalisation or case folding,
     explicit CR/LF rejection on `subject`, and `UnknownOutcome` for all
     unparseable `SENT` search shapes (entry without `id`, non-object entry,
     `resultSizeEstimate != 0` or `nextPageToken` with no usable `messages`,
     `messages` not a list, multiple entries, missing/mismatched `threadId`).
-  - `docs/runbook.md`: updated the `422 "Not executed: …"` meaning to
-    `Refused before anything was sent`.
+  - `docs/adr/0032-connector-gateway.md` & `docs/runbook.md`: removed the
+    contradiction between ADR 0032 item 3 and `Provider rules` on unreadable
+    duplicate-search bodies; updated the runbook's `422 "Not executed: …"`
+    meaning to `Refused before anything was sent`.
   - `services/connectors/tests/test_gateway.py`: removed tests that only
     exercised the unreachable `code` branch and added tests for every case in
-    Codex's `eb85372` review.
+    Codex's reviews of `eb85372` and `8cf0875` (`RecursionError` via deeply
+    nested JSON on search and write, missing/`None` `note` on `order["refunds"]`,
+    well-formed non-matching refund allowing write, unparseable Shopify GraphQL
+    envelopes, and unreadable `2xx` duplicate-search bodies on Shopify and Gmail).
 - **Results (`observed`, this Windows machine, final revision):**
 
   | Check | Result |
@@ -506,10 +521,56 @@ be an unhandled 500 instead of the 502 message.
   | `services/connectors`: `ruff check .` | passed |
   | `services/connectors`: `ruff format --check .` | 7 files already formatted |
   | `services/connectors`: `mypy gateway` | no issues in 5 source files |
-  | `services/connectors`: `pytest -q` | 133 passed (stub core and synthetic fixtures; unverified against real Shopify/Gmail) |
+  | `services/connectors`: `pytest -q` | 151 passed (stub core and synthetic fixtures; unverified against real Shopify/Gmail) |
   | `python scripts/scan_secrets.py` | 0 findings |
 
 - **Not rerun:** the core suites, `db-check`, and `load_packs --check` (no files outside `services/connectors/` and `docs/` changed).
+
+### Before enabling real dispatch
+
+Every open gateway item that must be closed before real dispatch is enabled:
+
+1. **Thread fields from core (`send_reply`, ADR 0032 item 7):** `/actions/{id}/consume`
+   currently supplies only `id`, `channel`, `recipient`, `subject`, and `body`
+   (with `drafts.subject` nullable) and omits `thread_id`, `in_reply_to`,
+   `references`, and `thread_subject`. The real-dispatch migration must add
+   those fields from the stored inbound message (never from n8n or the model)
+   and decide what subject a reply uses when `drafts.subject` is null; until
+   then every real `send_reply` fails closed with HTTP 422.
+2. **Claim-carries-adapter decision (ADR 0032 item 2):** because `/actions/{id}/claim`
+   is shared and does not check the adapter today, sending a `mock` action ID to
+   the gateway claims an `executing` lease before `consume` (`adapter: "real"`)
+   returns 409. Before enabling real dispatch, choose one of the three ADR 0032
+   options (Option 1: `adapter` parameter on `/claim`; Option 2: separate worker
+   principals/routes per adapter; Option 3: snapshot resolved `adapter` onto
+   `actions` at `/decide`).
+3. **Gateway clock skew (ADR 0032 "Known limits"):** the gateway computes the
+   remaining lease as core's `expires_at` minus its own wall clock with an
+   8-second completion reserve (`COMPLETION_RESERVE_SECONDS = 8.0`), and skew is
+   untested. Keep gateway and database hosts time-synchronised to well under
+   8 seconds, and consider having core return remaining lease seconds in the
+   real-dispatch migration.
+4. **Sandbox recordings, Shopify API version, and `RECORDED_REFUSALS` (ADR 0032 "Write outcome rule" & "Known limits"):**
+   no request has been sent to Shopify or Google, all fixtures are synthetic,
+   the Shopify API version is unverified/unconfigured, and `RECORDED_REFUSALS`
+   starts empty. Create a Shopify development store and test Gmail mailbox,
+   choose the Shopify API version, record real responses for all fixtures in
+   `services/connectors/tests/fixtures/`, fix any shape differences, and add
+   entries to `RECORDED_REFUSALS` only with a recorded fixture and regression test.
+5. **Core real-adapter migration & gateway-vs-core test (ADR 0032 item 1):**
+   generalize the security-definer claim, consume, complete, and reconcile
+   database functions (currently restricted to `adapter = 'mock'`) in a
+   standalone reviewed migration, and verify the gateway against real core
+   rather than the test stub alone.
+6. **Reconciler lookup endpoint (ADR 0032 item 3):** expose a lookup endpoint on
+   the gateway so `wf_action_reconciler` can inspect real provider state via the
+   adapter searches.
+7. **n8n real branches (ADR 0032 item 4):** update the exported workflows so
+   `wf_tool_*` real branches call the gateway `/execute` endpoint.
+8. **Gmail OAuth token refresh (ADR 0032 item 5):** replace the static config
+   access token with an OAuth refresh flow.
+9. **Read tools on real adapters (ADR 0032 item 6):** implement real adapter
+   paths for read tools (`order_lookup`, `order_identity_check`, etc.).
 
 ### Not verified — read this before trusting the adapters
 

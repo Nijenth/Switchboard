@@ -142,27 +142,37 @@ async def issue_refund(
     )
     try:
         nodes = _graphql_data(found)["orders"]["nodes"]
-        # The search is a prefix match on some stores, so require the exact name.
-        orders = [node for node in nodes if node["name"].lstrip("#") == order_number.lstrip("#")]
-        if len(orders) != 1:
-            raise Refused("Order lookup did not return exactly one order")
-        order = orders[0]
-        refunds = order.get("refunds")
-        if not isinstance(refunds, list):
-            raise UnknownOutcome("Order lookup refunds had an unexpected shape")
-        matches: list[dict[str, Any]] = []
-        for refund in refunds:
-            if not isinstance(refund, dict):
-                raise UnknownOutcome("Order lookup refund entry had an unexpected shape")
-            note = refund.get("note")
-            if note is not None and not isinstance(note, str):
-                raise UnknownOutcome("Order lookup refund note had an unexpected shape")
-            if note and marker(key) in note.split():
-                matches.append(refund)
-        if len(matches) > 1:
-            raise UnknownOutcome("Multiple Shopify refunds matched the idempotency key")
-        if matches:
-            return _refund_effect(matches[0], reused=True)
+        if not isinstance(nodes, list):
+            raise TypeError("Invalid order nodes")
+        orders: list[dict[str, Any]] = []
+        for node in nodes:
+            if not isinstance(node, dict) or not isinstance(node.get("name"), str):
+                raise TypeError("Invalid order node")
+            # The search is a prefix match on some stores, so require the exact name.
+            if node["name"].lstrip("#") == order_number.lstrip("#"):
+                orders.append(node)
+    except (KeyError, TypeError, ValueError):
+        raise UnknownOutcome("Order lookup returned an unexpected shape") from None
+    if len(orders) != 1:
+        raise Refused("Order lookup did not return exactly one order")
+    order = orders[0]
+    refunds = order.get("refunds")
+    if not isinstance(refunds, list):
+        raise UnknownOutcome("Order lookup refunds had an unexpected shape")
+    matches: list[dict[str, Any]] = []
+    for refund in refunds:
+        if not isinstance(refund, dict):
+            raise UnknownOutcome("Order lookup refund entry had an unexpected shape")
+        note = refund.get("note")
+        if not isinstance(note, str):
+            raise UnknownOutcome("Order lookup refund note had an unexpected shape")
+        if marker(key) in note.split():
+            matches.append(refund)
+    if len(matches) > 1:
+        raise UnknownOutcome("Multiple Shopify refunds matched the idempotency key")
+    if matches:
+        return _refund_effect(matches[0], reused=True)
+    try:
         payments = [
             item
             for item in order["transactions"]
