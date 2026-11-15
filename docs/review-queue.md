@@ -120,3 +120,18 @@ survived its parent. `checkpoint_child.py` fixes it and the test was repeated.
 - Paste the full slice A and B briefs if they differ from the summary above.
 - Ask Codex for the independent review of this branch before merging.
 - Push the branch and confirm hosted CI.
+
+## Review fixes for slice 1
+
+Pre-fix tip `0e54dab0cdc8b7ad8e4f8d41fb77db4c07122efe`.
+Review range `pre-fix/01-live-stack..build/01-live-stack`.
+
+Commit `89374ef` implements items 1–4, including exclusive ownership before
+resource creation, checked cleanup, sanitized subprocess timeouts and the
+public lifecycle regression test. The follow-up adds its unit tests to CI.
+
+The previous builder reported SQL 301 PASS / 0 FAIL, core plain 157 passed /
+19 skipped, offline-ai 174 / 2 and offline-n8n 176 / 0 at `89374ef`. These
+are reported-by-builder results. This continuation independently observed
+the same harness unit tests pass on the descendant Branch 02. Hosted CI
+remains unverified. The CI-only follow-up changes no runtime code.
