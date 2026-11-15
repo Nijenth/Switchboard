@@ -4,7 +4,7 @@ import unicodedata
 from jsonschema import Draft202012Validator
 from referencing import Registry
 
-from app.guardrails import PII_PATTERNS, detect_prompt_injection, redact_text
+from app.guardrails import FIRST_NAME_GREETING, PII_PATTERNS, detect_prompt_injection, redact_text
 
 DRAFT_SCHEMA = {
     "type": "object",
@@ -21,7 +21,9 @@ PROMISE = re.compile(
     re.IGNORECASE,
 )
 HOSTILE = re.compile(r"\b(?:idiot|stupid|shut up|your fault|moron)\b", re.IGNORECASE)
-SENSITIVE = re.compile(r"\bNW-\d+\b|\[(?:EMAIL|PHONE|CARD|SSN|ADDRESS|SENDER)\]", re.IGNORECASE)
+SENSITIVE = re.compile(
+    r"\bNW-\d+\b|\[(?:EMAIL|PHONE|CARD|SSN|ADDRESS|SENDER|NAME|POSTCODE)\]", re.IGNORECASE
+)
 ORDER_REFERENCE = re.compile(r"NW-\d+", re.IGNORECASE)
 TOOL_TOKEN = re.compile(r"(?<![\w@-])[A-Z0-9]{6,32}(?![\w@-])")
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
@@ -93,6 +95,9 @@ def assess(
     scrubbed_body = TOOL_TOKEN.sub(
         lambda match: "TOKEN" if match.group(0) in cited_tokens else match.group(0), body
     )
+    # A conventional leading first-name salutation is permitted. Full names, the
+    # remaining body and the exact-evidence requirement still undergo their checks.
+    scrubbed_body = FIRST_NAME_GREETING.sub("", scrubbed_body, count=1)
     scrubbed_normal = unicodedata.normalize("NFKC", scrubbed_body)
     content = " ".join(body.split())
 

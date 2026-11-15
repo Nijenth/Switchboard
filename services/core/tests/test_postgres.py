@@ -361,7 +361,10 @@ def test_ingest_deduplicates_and_records_one_audit_trail(
 ) -> None:
     payload = make_payload(INVOICES)
     payload["external_thread_id"] = None
-    payload["body_text"] = "Please contact fixture@example.test about order NW-12345."
+    payload["sender"] = {"address": "fixture@example.test", "name": "Rowan Thistle"}
+    payload["body_text"] = (
+        "Please contact Rowan Thistle at fixture@example.test about order NW-12345."
+    )
 
     def deliver() -> dict[str, object]:
         response = client.post("/ingest", json=payload, headers=bearer(credentials[INVOICES]))
@@ -397,7 +400,7 @@ def test_ingest_deduplicates_and_records_one_audit_trail(
             UUID(str(first["case_id"])),
             UUID(str(first["endpoint_id"])),
             payload["body_text"],
-            "Please contact [EMAIL] about order NW-12345.",
+            "Please contact [NAME] at [EMAIL] about order NW-12345.",
             payload["form_fields"],
             UUID("30000000-0000-0000-0000-000000000003"),
         )

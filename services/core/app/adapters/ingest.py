@@ -83,7 +83,7 @@ def ingest(
     case_id = get_case(connection, payload, tenant_id, tenant_pack_id, pack_id, endpoint_id)
     redacted = redact_text(
         payload.body_text,
-        sender_name=payload.sender.name or "",
+        known_names=[payload.sender.name] if payload.sender.name else [],
         sender_address=payload.sender.address,
     )
     message = connection.execute(

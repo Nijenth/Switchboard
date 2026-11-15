@@ -50,6 +50,24 @@ ORDER = "Your order NW-1001 is shipped with UPS."
 
 
 @pytest.mark.parametrize(
+    ("body", "source", "pii_safe", "g7"),
+    [
+        ("Hi Emma, your order NW-1001 is shipped with UPS.", ORDER, True, False),
+        ("Hi Emma, your order NW-1001 is shipped with UPS.", None, True, True),
+        ("Hi Emma Vale, your order NW-1001 is shipped with UPS.", None, False, False),
+        ("Hi Emma, the label is for Dana Fen.", None, False, False),
+        ("Hi Emma, the label reads 02139 Cambridge.", None, False, False),
+    ],
+)
+def test_draft_salutation_preserves_existing_grounding_and_privacy_checks(
+    body: str, source: str | None, pii_safe: bool, g7: bool
+) -> None:
+    _, checks = assess(body, ["tool:a1"], {"tool:a1": source or body}, "demo@example.test")
+    assert checks["pii_safe"] is pii_safe
+    assert checks["g7_passed"] is g7
+
+
+@pytest.mark.parametrize(
     ("values", "expected"),
     [
         ({"order_number": "NW-1001", "order_status": "shipped", "carrier": "UPS"}, ORDER),

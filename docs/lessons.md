@@ -1,5 +1,9 @@
 # Engineering lessons
 
+## PII recall
+
+- The v3 offline eval found body names and house-number-last addresses surviving redaction. A fixed multilingual probe set measured 19 of 69 exact spans before the rules change, with all 34 negative controls intact. ADR 0028 records the rule changes and the rerun. Measure exact spans and preservation of benign text before changing the detector.
+
 ## Ingress validation and idempotency
 
 - The Stage 1 review confirmed that PostgreSQL cannot store NUL in text and that the API mapped the resulting data error to HTTP 503. Reject NUL before database access and classify permanent SQL errors separately from temporary connectivity and pool failures.
