@@ -319,6 +319,7 @@ Run `scripts/serve_audit_checkpoint.py` under the separate checkpoint OS identit
 
 Run `./scripts/test_core.ps1 -WithN8n` for the disposable workflow test. It uses the pinned Docker image `docker.n8n.io/n8nio/n8n:2.46.7`, imports the exports into a temporary n8n database, uses a local Slack fixture and a real PostgreSQL mock login, and cleans up its test volume. The test uses manual triggers and a separate checkpoint process. Verify live schedules, queue-mode workers, and checkpoint account permissions when deploying.
 
+
 ### Live demo console
 
 `GET /api/state` and console mutations share the stack lock. A tab that receives
@@ -329,3 +330,28 @@ On Windows, a live-demo heartbeat update can briefly wait for an open state
 reader to release its file handle. If the owner exits with a persistent
 sharing or access error, close the process holding `state.json` open and run
 `scripts/demo_live down` to clear the disposable stack before starting it again.
+
+## Connector gateway (ADR 0032, release gate 3)
+
+`services/connectors` is the only holder of provider write credentials. Real
+dispatch is still disabled in core, so in every current deployment `/execute`
+ends with "Core did not release this action for real dispatch". That is the
+expected, safe answer until the real-adapter grant migration is reviewed.
+
+| `/execute` answer | Meaning | What to do |
+|---|---|---|
+| 401 | Unknown caller token | Check the caller credential for that tenant. |
+| 409 "Core did not grant" / "did not release" | Core refused the claim or the consume | Nothing was sent. Check the action's state and approval in core. |
+| 409 "Only grants for the real adapter" / "No credential" | The gateway refused the dispatch before calling a provider | Nothing was sent. The lease expires and the reconciler closes the attempt. Fix the tenant's adapter configuration or the gateway account list. |
+| 409 "Not enough of the lease remains to call the provider" | Less than 1 second of the lease was left (after the 8-second completion reserve) before a provider call. This can happen before the search, between search retries, or after the search and before the write | The write was not sent. The lease expires and the reconciler closes the attempt. If it repeats, look for a slow provider search, a slow core, or clock drift between the gateway and database hosts (see below). |
+| 422 "Not executed: …" | Refused before anything was sent | Nothing was written. The reconciler records the absence after the lease. For `send_reply`, "Approved draft is not a sendable email" is the expected answer until core's dispatch carries the thread fields (ADR 0032, "What is deliberately not built here", item 7). |
+| 422 with `{"status": "failed", "reason": …}` | Shopify holds a refund record for this action and all of its transactions are `ERROR` or `FAILURE`. The refund was attempted and did not move money | **Do not retry.** The gateway does not complete the action, so it becomes `unknown_outcome` after the lease. Confirm the failed refund in Shopify by its note `switchboard:<key>` and submit that evidence through `/actions/{id}/reconcile`. A new refund needs a new approved action. |
+| 502 "Provider outcome unknown" | The write may have happened | **Do not retry.** The action becomes `unknown_outcome`. Look the effect up by its idempotency key (refund note `switchboard:<key>`, or the derived Message-ID) and submit evidence through `/actions/{id}/reconcile`. |
+| 502 "Executed, but completion was not recorded" | The provider write succeeded and core did not record it | Same as above; the lookup will find the effect. |
+
+Keep the gateway host and the database host time-synchronised to well under
+8 seconds. The gateway measures the remaining lease against its own clock,
+and 8 seconds is its only margin (ADR 0032, "Known limits").
+
+The gateway logs event names and IDs only. It never logs payloads,
+recipients, message bodies or tokens.
