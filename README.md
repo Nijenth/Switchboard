@@ -1,5 +1,7 @@
 # Switchboard
 
+[![Phase 1 checks](https://github.com/Nijenth/Switchboard/actions/workflows/phase1.yml/badge.svg?branch=main)](https://github.com/Nijenth/Switchboard/actions/workflows/phase1.yml)
+
 A multi-tenant AI operations engine. It takes incoming work (emails, chats, web forms), understands it,
 takes action in business tools under strict rules, asks a human when it should, and records every decision.
 
