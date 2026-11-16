@@ -319,6 +319,18 @@ Run `scripts/serve_audit_checkpoint.py` under the separate checkpoint OS identit
 
 Run `./scripts/test_core.ps1 -WithN8n` for the disposable workflow test. It uses the pinned Docker image `docker.n8n.io/n8nio/n8n:2.46.7`, imports the exports into a temporary n8n database, uses a local Slack fixture and a real PostgreSQL mock login, and cleans up its test volume. The test uses manual triggers and a separate checkpoint process. Verify live schedules, queue-mode workers, and checkpoint account permissions when deploying.
 
+
+### Live demo console
+
+`GET /api/state` and console mutations share the stack lock. A tab that receives
+HTTP 409 can refresh after the active operation finishes. A rejected state
+read starts no timeline or approval query.
+
+On Windows, a live-demo heartbeat update can briefly wait for an open state
+reader to release its file handle. If the owner exits with a persistent
+sharing or access error, close the process holding `state.json` open and run
+`scripts/demo_live down` to clear the disposable stack before starting it again.
+
 ## Connector gateway (ADR 0032, release gate 3)
 
 `services/connectors` is the only holder of provider write credentials. Real

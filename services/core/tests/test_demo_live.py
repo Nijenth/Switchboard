@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from runpy import run_path
 from time import monotonic, sleep
@@ -223,6 +224,47 @@ def test_state_names_that_are_not_ours_are_never_removed(
     assert Path.home().exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows readers can deny delete sharing")
+def test_heartbeat_survives_an_open_state_reader(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = {"phase": "running", "heartbeat": 1}
+    demo_live.write_state(state)
+    path = state_dir / "state.json"
+    with path.open(encoding="utf-8") as reader:
+
+        def release_reader(delay: float) -> None:
+            if delay == demo_live.HEARTBEAT_SECONDS:
+                demo_live.stop_file().touch()
+            else:
+                # The ordinary reader holds the real Windows file handle until
+                # the first replacement fails. The old snapshot is still valid.
+                assert json.load(reader) == state
+                reader.close()
+
+        monkeypatch.setattr(demo_live, "sleep", release_reader)
+        demo_live.hold(state)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["heartbeat"] > state["heartbeat"]
+    assert not path.with_suffix(".tmp").exists()
+
+
+def test_state_write_surfaces_unrelated_permission_errors(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(*_: object) -> None:
+        raise PermissionError("read-only directory")
+
+    def unexpected_sleep(_: float) -> None:
+        pytest.fail("unrelated permission errors must fail immediately")
+
+    monkeypatch.setattr(Path, "replace", denied)
+    monkeypatch.setattr(demo_live, "sleep", unexpected_sleep)
+    with pytest.raises(PermissionError, match="read-only directory"):
+        demo_live.write_state({"phase": "running", "heartbeat": 1})
+    assert list(state_dir.iterdir()) == []
+
+
 def run_demo_live(
     env: dict[str, str], *args: str, timeout: int = 240
 ) -> subprocess.CompletedProcess[str]:
@@ -301,7 +343,9 @@ def test_public_lifecycle_up_smoke_status_second_up_down(tmp_path: Path) -> None
             assert owner.poll() is None
             beat = json.loads(state_path.read_text(encoding="utf-8"))["heartbeat"]
             sleep(2 * demo_live.HEARTBEAT_SECONDS + 1)
-            assert json.loads(state_path.read_text(encoding="utf-8"))["heartbeat"] > beat
+            assert json.loads(state_path.read_text(encoding="utf-8"))["heartbeat"] > beat, (
+                f"owner exit={owner.poll()}\n" + log_path.read_text(encoding="utf-8")[-3000:]
+            )
             again = report["read_timeline"](container, marker, NORTHWIND, {case[1]})["rows"]
             assert len(again) == len(rows)
         finally:

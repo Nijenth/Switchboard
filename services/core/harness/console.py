@@ -7,7 +7,8 @@ route and the browser never receives a stack credential.
 
 import re
 from collections import deque
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from html import escape
 from runpy import run_path
@@ -19,8 +20,11 @@ from uuid import UUID
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from psycopg import Connection
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from starlette.responses import Response
+from starlette.types import Lifespan
 
 from app.adapters.db import create_pool
 from harness.console_page import PAGE, SCRIPT, STYLE
@@ -139,21 +143,30 @@ class Backend(Protocol):
         """Posted reviews that still wait for a decision, for these cases."""
 
 
+# Reuse the replay reader with its reporting login, marker check and text redaction.
+_DEMO_REPORT = run_path(str(ROOT / "scripts" / "demo_report"))
+
+
 class StackBackend:
     """The real backend: n8n CLI runs, the reporting timeline and the signed reviewer click."""
 
-    def __init__(self, stack: LiveStack, container: str, marker: str) -> None:
+    def __init__(
+        self,
+        stack: LiveStack,
+        container: str,
+        marker: str,
+        pool: ConnectionPool[Connection[tuple[Any, ...]]],
+    ) -> None:
         self._stack, self._container, self._marker = stack, container, marker
-        # Reuse the replay exporter's reader: reporting login, marker-checked, redacted text only.
-        report = run_path(str(ROOT / "scripts" / "demo_report"))
-        self._read_timeline = report["read_timeline"]
-        self._email = report["EMAIL"]
+        self._pool = pool
+        self._read_timeline = _DEMO_REPORT["read_timeline"]
+        self._email = _DEMO_REPORT["EMAIL"]
 
     def ingest(self, sender: str, text: str, external_id: str, date: str) -> None:
         self._stack.send_email(sender, text, external_id=external_id, date=date)
 
     def find_case(self, external_id: str) -> str | None:
-        with create_pool(self._stack.config) as pool, pool.connection() as conn, conn.transaction():
+        with self._pool.connection() as conn, conn.transaction():
             set_northwind(conn)
             rows = conn.execute(
                 """SELECT DISTINCT case_id::text FROM public.messages
@@ -194,7 +207,7 @@ class StackBackend:
     def pending(self, case_ids: Sequence[str]) -> list[dict[str, Any]]:
         if not case_ids:
             return []
-        with create_pool(self._stack.config) as pool, pool.connection() as conn, conn.transaction():
+        with self._pool.connection() as conn, conn.transaction():
             set_northwind(conn)
             rows = conn.execute(
                 """SELECT r.id::text, r.case_id::text, r.subject_type, r.required_role, r.reason,
@@ -361,45 +374,42 @@ class Console:
             sender, text, label = request.sender or "", (request.text or "").strip(), "Free text"
             if not EMAIL_ADDRESS.fullmatch(sender) or not text or "\x00" in text:
                 raise HTTPException(status_code=422, detail="Enter a sender address and a message")
-        with self._exclusive():
-            # Sending the same input again while its first attempt is unfinished is a retry
-            # of that attempt, never a second case.
-            unfinished = next(
-                (c for c in self._cases if c.partial and (c.sender, c.text) == (sender, text)),
-                None,
-            )
-            self._allow(new_message=unfinished is None)
-            if unfinished is None:
-                # Typed text is shown back to the person who typed it. Stored text stays redacted.
-                unfinished = Case(new_external_id(), delivery_date(), label, sender, text)
-                self._cases.append(unfinished)
-            self._process(unfinished)
+        # Sending the same input again while its first attempt is unfinished is a retry
+        # of that attempt, never a second case.
+        unfinished = next(
+            (c for c in self._cases if c.partial and (c.sender, c.text) == (sender, text)),
+            None,
+        )
+        self._allow(new_message=unfinished is None)
+        if unfinished is None:
+            # Typed text is shown back to the person who typed it. Stored text stays redacted.
+            unfinished = Case(new_external_id(), delivery_date(), label, sender, text)
+            self._cases.append(unfinished)
+        self._process(unfinished)
 
     def retry(self, external_id: str) -> None:
-        with self._exclusive():
-            case = next((c for c in self._cases if c.external_id == external_id), None)
-            if case is None or not case.partial:
-                raise HTTPException(status_code=404, detail="Nothing to retry for that message")
-            self._allow(new_message=False)
-            self._process(case)
+        case = next((c for c in self._cases if c.external_id == external_id), None)
+        if case is None or not case.partial:
+            raise HTTPException(status_code=404, detail="Nothing to retry for that message")
+        self._allow(new_message=False)
+        self._process(case)
 
     def decide(self, review_id: str, decision: str) -> None:
-        with self._exclusive():
-            case_ids = [case.case_id for case in self._cases if case.case_id]
-            review = next(
-                (item for item in self.backend.pending(case_ids) if item["id"] == review_id), None
-            )
-            if review is None:
-                raise HTTPException(status_code=404, detail="That review is no longer waiting")
-            reviewer = REVIEWERS.get(review["required_role"], DEFAULT_REVIEWER)[0]
-            self.backend.decide(review_id, reviewer, decision)
+        case_ids = [case.case_id for case in self._cases if case.case_id]
+        review = next(
+            (item for item in self.backend.pending(case_ids) if item["id"] == review_id), None
+        )
+        if review is None:
+            raise HTTPException(status_code=404, detail="That review is no longer waiting")
+        reviewer = REVIEWERS.get(review["required_role"], DEFAULT_REVIEWER)[0]
+        self.backend.decide(review_id, reviewer, decision)
 
     def _exclusive(self) -> "_Exclusive":
         return _Exclusive(self._busy)
 
 
 class _Exclusive:
-    """One stack operation at a time: the scratch n8n volume is not safe for concurrent runs."""
+    """Keep stack operations and state reads exclusive without queuing them."""
 
     def __init__(self, lock: Lock) -> None:
         self._lock = lock
@@ -412,9 +422,17 @@ class _Exclusive:
         self._lock.release()
 
 
-def create_console(backend: Backend, **limits: Any) -> FastAPI:
+def create_console(
+    backend: Backend, *, lifespan: Lifespan[FastAPI] | None = None, **limits: Any
+) -> FastAPI:
     console = Console(backend, **limits)
-    app = FastAPI(title="Switchboard demo console", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(
+        title="Switchboard demo console",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
     app.state.console = console
     static_headers = {"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
 
@@ -433,19 +451,26 @@ def create_console(backend: Backend, **limits: Any) -> FastAPI:
         if token is None or not compare_digest(token.encode(), console.token.encode()):
             raise HTTPException(status_code=403, detail="Missing console token")
 
-    def failed_step(error: StackError) -> JSONResponse:
-        # StackError text holds status codes and node names only, never payloads.
-        # The current cases ride along so a partly processed one is shown, not lost.
-        body = {"detail": f"A stack step failed. {error}"[:600]}
-        try:
-            body.update(console.state())
-        except StackError:
-            pass
-        return JSONResponse(body, status_code=502)
-
-    @app.exception_handler(StackError)
-    async def stack_failed(_: Request, error: StackError) -> JSONResponse:
-        return failed_step(error)
+    def perform(step: Callable[[], None] | None = None) -> dict[str, Any] | JSONResponse:
+        # Keep the mutation and its snapshot in the same critical section. Busy tabs
+        # get a 409 without starting a query or waiting for a CLI command to finish.
+        with console._exclusive():
+            error = None
+            if step is not None:
+                try:
+                    step()
+                except StackError as exc:
+                    error = exc
+            try:
+                state = console.state()
+            except StackError as exc:
+                state = {}
+                if error is None:
+                    error = exc
+            if error is None:
+                return state
+            # StackError holds sanitized details. Include a partial case when readable.
+            return JSONResponse({"detail": f"A stack step failed. {error}"[:600], **state}, 502)
 
     @app.get("/", response_class=HTMLResponse)
     def page() -> HTMLResponse:
@@ -469,42 +494,46 @@ def create_console(backend: Backend, **limits: Any) -> FastAPI:
         return Response(STYLE, media_type="text/css", headers=static_headers)
 
     # Plain ``def`` routes run in a worker thread, so a slow n8n step does not block the server.
-    @app.get("/api/state")
-    def state(x_console_token: str | None = Header(default=None)) -> dict[str, Any]:
+    @app.get("/api/state", response_model=None)
+    def state(x_console_token: str | None = Header(default=None)) -> dict[str, Any] | JSONResponse:
         authorize(x_console_token)
-        return console.state()
+        return perform()
 
-    @app.post("/api/send")
+    @app.post("/api/send", response_model=None)
     def send(
         request: SendInput, x_console_token: str | None = Header(default=None)
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | JSONResponse:
         authorize(x_console_token)
-        console.send(request)
-        return console.state()
+        return perform(lambda: console.send(request))
 
-    @app.post("/api/cases/{external_id}/retry")
+    @app.post("/api/cases/{external_id}/retry", response_model=None)
     def retry(
         external_id: str, x_console_token: str | None = Header(default=None)
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | JSONResponse:
         authorize(x_console_token)
         if not EXTERNAL_ID.fullmatch(external_id):
             raise HTTPException(status_code=404, detail="Nothing to retry for that message")
-        console.retry(external_id)
-        return console.state()
+        return perform(lambda: console.retry(external_id))
 
-    @app.post("/api/reviews/{review_id}")
+    @app.post("/api/reviews/{review_id}", response_model=None)
     def review(
         review_id: UUID, request: DecisionInput, x_console_token: str | None = Header(default=None)
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | JSONResponse:
         authorize(x_console_token)
-        console.decide(str(review_id), request.decision)
-        return console.state()
+        return perform(lambda: console.decide(str(review_id), request.decision))
 
     return app
 
 
 def console_for_stack(stack: LiveStack, container: str, marker: str) -> FastAPI:
-    return create_console(StackBackend(stack, container, marker))
+    pool = create_pool(stack.config)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        with pool:
+            yield
+
+    return create_console(StackBackend(stack, container, marker, pool), lifespan=lifespan)
 
 
 __all__ = ["SCENARIOS", "Console", "console_for_stack", "create_console", "outcome_badges"]

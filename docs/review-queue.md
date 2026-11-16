@@ -236,6 +236,45 @@ remains unverified. The CI-only follow-up changes no runtime code.
 - Rehearse the console once before showing it to anyone.
 - Ask Codex for the independent review of this branch.
 
+## Slice `fix/n8n-core-transport`
+
+- **Part A (observed).** The focused probe reproduced five-second TCP connect
+  stalls through `host.docker.internal` with both the harness socket and a
+  plain Uvicorn bind. A persistent client container also stalled. The Docker
+  namespace control completed. See [ADR 0033 §9](adr/0033-console-timeout.md#9-follow-up-on-fixn8n-core-transport).
+- **Part A verdict (inferred).** The Docker Desktop host path is implicated
+  before Uvicorn receives the connection. The failing Desktop component is
+  unverified.
+- **Part B (observed).** Stopped at diagnosis, as requested for an external
+  cause. The proposed follow-up options are in ADR 0033. The ten-run fix
+  acceptance gate is unverified.
+- **Part C (observed).** Each console uses one lifespan-managed `StackBackend`
+  pool for both queries. The report is loaded once per process. State reads
+  and mutations share a non-blocking lock. Tests covered pool lifetime and
+  reuse, report reuse, and HTTP 409 while a concurrent read or mutation holds
+  the lock.
+- **Part D (observed).** A real Windows read handle made `Path.replace()`
+  raise WinError 5 and end the old heartbeat loop. The regression test holds
+  that handle through the first failed replacement and confirms the next
+  heartbeat is published. The public test retains its strict comparison.
+- **Part D (inferred).** The reproduced race explains the timestamp tie in
+  ADR 0033 §3. The original failing run's owner exception is unverified.
+
+### Local verification
+
+| Check | Observed result |
+|---|---|
+| Ruff, format, mypy `app harness` | Pass, 48 formatted files and 33 typed source files |
+| Pack validation and secret scan | Pass, zero secret findings |
+| Targeted console and heartbeat pytest | 47 passed, 1 lifecycle skip |
+| `db-check` | Exit 0, no SQL failures |
+| `test_core.sh` | 194 passed, 19 skipped |
+| `test_core.sh --offline-ai` | 211 passed, 2 skipped. Fixture eval gates passed |
+| `test_core.sh --offline-n8n` | One run, exit 1. 212 passed including the public heartbeat lifecycle. `SwitchboardDispatch1` timed out before the console step. See ADR 0033 §10 |
+
+**Unverified.** The real-HTTP browser console block and ten consecutive n8n
+passes remain open. Hosted CI has no result for this branch.
+
 ## Review fixes for slice 2
 
 - **Pre-fix tip:** `23e8993379781e2d82c1e1c99718a667c6472bcb` (`pre-fix/02-live-console`).
