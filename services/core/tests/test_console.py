@@ -1,14 +1,21 @@
 import re
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from harness import console as console_module
 from harness.console import (
     SCENARIOS,
     SENDS_PER_MINUTE,
     SESSION_SEND_CAP,
+    StackBackend,
+    console_for_stack,
     create_console,
     outcome_badges,
 )
@@ -90,6 +97,69 @@ def api(backend: FakeBackend, clock: Clock) -> TestClient:
 
 def free(text: str, sender: str = "liam.chen@example.com") -> dict[str, str]:
     return {"sender": sender, "text": text}
+
+
+def test_stack_console_opens_one_pool_for_both_queries(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = MagicMock()
+    factory = MagicMock(return_value=pool)
+    monkeypatch.setattr(console_module, "create_pool", factory)
+    connection = pool.connection.return_value.__enter__.return_value
+    monkeypatch.setenv("SWITCHBOARD_CORE_TEST_MARKER", "test-marker")
+    connection.execute.return_value.fetchone.return_value = (
+        "test-marker",
+        "switchboard_core",
+        "switchboard_core",
+    )
+    connection.execute.return_value.fetchall.side_effect = [[("case-id",)], []]
+    stack = SimpleNamespace(config=object())
+    app = console_for_stack(stack, "test-container", "test-marker")
+    backend = app.state.console.backend
+
+    pool.__enter__.assert_not_called()
+    with TestClient(app):
+        pool.__enter__.assert_called_once_with()
+        assert backend.find_case("external-id") == "case-id"
+        assert backend.pending(["case-id"]) == []
+        assert pool.connection.call_count == 2
+        assert connection.transaction.call_count == 2
+    factory.assert_called_once_with(stack.config)
+    pool.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_backends_reuse_the_loaded_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    reload_report = MagicMock(side_effect=AssertionError("demo_report loaded again"))
+    monkeypatch.setattr(console_module, "run_path", reload_report)
+    first = StackBackend(MagicMock(), "first", "marker-one", MagicMock())
+    second = StackBackend(MagicMock(), "second", "marker-two", MagicMock())
+    assert first._read_timeline is second._read_timeline
+    assert first._email is second._email
+    reload_report.assert_not_called()
+
+
+def test_state_reads_do_not_queue_or_overlap(
+    api: TestClient, backend: FakeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = Event(), Event()
+    original = backend.timelines
+
+    def slow_timeline(case_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+        entered.set()
+        assert release.wait(5)
+        return original(case_ids)
+
+    timeline = MagicMock(side_effect=slow_timeline)
+    monkeypatch.setattr(backend, "timelines", timeline)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(api.get, "/api/state")
+        try:
+            assert entered.wait(5)
+            assert api.get("/api/state").status_code == 409
+            assert api.post("/api/send", json={"scenario": "verified"}).status_code == 409
+            timeline.assert_called_once()
+        finally:
+            release.set()
+        assert first.result(timeout=5).status_code == 200
+    assert api.get("/api/state").status_code == 200
 
 
 def test_page_carries_the_token_and_the_mock_notice(api: TestClient) -> None:
@@ -350,6 +420,7 @@ def test_only_a_waiting_review_from_this_session_can_be_decided(
 def test_second_step_is_refused_while_one_runs(api: TestClient, backend: FakeBackend) -> None:
     console = api.app.state.console  # type: ignore[attr-defined]
     with console._exclusive():
+        assert api.get("/api/state").status_code == 409
         assert api.post("/api/send", json={"scenario": "verified"}).status_code == 409
     assert backend.deliveries == []
     assert api.post("/api/send", json={"scenario": "verified"}).status_code == 200

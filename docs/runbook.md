@@ -318,3 +318,9 @@ Any new case policy revision invalidates an outstanding grant for dispatch. On t
 Run `scripts/serve_audit_checkpoint.py` under the separate checkpoint OS identity, with `SWITCHBOARD_CHECKPOINT_HISTORY`, `SWITCHBOARD_AUDIT_URL`, `SWITCHBOARD_AUDIT_TOKEN`, and a distinct `SWITCHBOARD_CHECKPOINT_SCHEDULE_TOKEN`. The default listener is loopback. Use a private protected route to its `/checkpoint` endpoint for n8n, with `SWITCHBOARD_CHECKPOINT_URL` and the schedule token. Only the checkpoint identity receives write access to the history. n8n receives neither that access nor the audit token.
 
 Run `./scripts/test_core.ps1 -WithN8n` for the disposable workflow test. It uses the pinned Docker image `docker.n8n.io/n8nio/n8n:2.46.7`, imports the exports into a temporary n8n database, uses a local Slack fixture and a real PostgreSQL mock login, and cleans up its test volume. The test uses manual triggers and a separate checkpoint process. Verify live schedules, queue-mode workers, and checkpoint account permissions when deploying.
+
+### Live demo console
+
+`GET /api/state` and console mutations share the stack lock. A tab that receives
+HTTP 409 can refresh after the active operation finishes. A rejected state
+read starts no timeline or approval query.

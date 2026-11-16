@@ -233,3 +233,8 @@ remains unverified. The CI-only follow-up changes no runtime code.
 - **Part B (observed).** Stopped at diagnosis, as requested for an external
   cause. The proposed follow-up options are in ADR 0033. The ten-run fix
   acceptance gate is unverified.
+- **Part C (observed).** Each console uses one lifespan-managed `StackBackend`
+  pool for both queries. The report is loaded once per process. State reads
+  and mutations share a non-blocking lock. Tests covered pool lifetime and
+  reuse, report reuse, and HTTP 409 while a concurrent read or mutation holds
+  the lock.
