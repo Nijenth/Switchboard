@@ -192,7 +192,7 @@
     on mock shop data.</p>
   <ol class="steps">
     <li><span class="n">1</span><span class="chip c-n8n">n8n</span><span>Receives the email through a signed webhook and posts it to the core service.</span></li>
-    <li><span class="n">2</span><span class="chip c-core">Core</span><span>Creates the case once (a repeated delivery is recognised and ignored), redacts personal data, checks for prompt injection.</span></li>
+    <li><span class="n">2</span><span class="chip c-core">Core</span><span>Creates the case once (a repeated delivery is recognised and ignored), redacts personal data with rules (known gaps: it misses names and addresses outside its patterns), checks for prompt injection.</span></li>
     <li><span class="n">3</span><span class="chip c-core">Core</span><span>Classifies the message as a refund request and extracts the order number, with a confidence for each field.</span></li>
     <li><span class="n">4</span><span class="chip c-n8n">n8n</span><span>Runs the read-only lookups core proposes: identity check first, then the order and its refund eligibility.</span></li>
     <li><span class="n">5</span><span class="chip c-core">Core</span><span>Runs the policy engine. A refund is a money tool, so the decision is <code>needs_approval</code>. A refund action and a reply draft are created as proposals.</span></li>
