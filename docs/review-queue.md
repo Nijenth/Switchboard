@@ -220,3 +220,16 @@ remains unverified. The CI-only follow-up changes no runtime code.
 
 - Rehearse the console once before showing it to anyone.
 - Ask Codex for the independent review of this branch.
+
+## Slice `fix/n8n-core-transport`
+
+- **Part A (observed).** The focused probe reproduced five-second TCP connect
+  stalls through `host.docker.internal` with both the harness socket and a
+  plain Uvicorn bind. A persistent client container also stalled. The Docker
+  namespace control completed. See [ADR 0033 §9](adr/0033-console-timeout.md#9-follow-up-on-fixn8n-core-transport).
+- **Part A verdict (inferred).** The Docker Desktop host path is implicated
+  before Uvicorn receives the connection. The failing Desktop component is
+  unverified.
+- **Part B (observed).** Stopped at diagnosis, as requested for an external
+  cause. The proposed follow-up options are in ADR 0033. The ten-run fix
+  acceptance gate is unverified.

@@ -147,3 +147,84 @@ Eleven `--offline-n8n` runs completed cleanly under instrumentation: 10 with the
    - Pass/reuse one shared `psycopg_pool` in `StackBackend` (no `create_pool` inside `find_case` or `pending`).
    - Load `scripts/demo_report` once at module scope instead of calling `run_path` per `StackBackend.__init__`.
    - Protect or rate-limit/cache `Console.state` (`timelines` / `pending`), and optionally run the console server in its own OS process in `demo_live up --console` (as originally specified in ADR 0031) so interactive browser/UI operations and `docker exec` subprocesses are completely isolated from `core`.
+
+---
+
+## 9. Follow-up on `fix/n8n-core-transport`
+
+**Observed environment.** Windows with Docker Desktop 4.98.0 (245422), Engine 29.9.2,
+host Python 3.12.10 and Uvicorn 0.54.0, and Node 26.12.1 in the pinned n8n image
+(2.46.7). The network control uses the cached LiteLLM image for Python and Uvicorn
+0.51.0. The probe uses Node HTTP and a minimal ASGI response. It needs no database,
+n8n workflow execution, or credentials.
+
+From `services/core` in the Python 3.12 environment:
+
+```bash
+python tests/probe_n8n_transport.py > probe.jsonl
+python tests/probe_n8n_transport.py --samples 40 --variant plain-one-shot \
+  --variant harness-one-shot --variant harness-long-lived > probe-followup.jsonl
+python tests/probe_n8n_transport.py --samples 20 --reuse > probe-reuse.jsonl
+python tests/probe_n8n_transport.py --samples 18 > probe-tcp-state.jsonl
+```
+
+Each sample issues 60 GETs in alternating batches of 2 and 8. One-shot samples
+start a new `docker run --rm` container. Long-lived samples use `docker exec` in
+one container, with a fresh Node process for each sample. Each request has a
+five-second deadline. Node logs DNS lookup, socket assignment, connect, write
+completion, response headers, and completion when those events occur. The test
+hooks `socket.accept` or Windows IOCP accept completion, then records the first
+read delivered to Uvicorn's H11 protocol and ASGI entry. The final probe also
+records the kernel TCP state of the client socket still connecting at the
+deadline.
+
+The network control shares the server's Docker network namespace via
+`--network container:<server>` and connects to its `127.0.0.1`. This keeps all
+listeners loopback-only with no published ports. It measures the path inside
+Docker while bypassing Desktop's host forwarding. An inter-container bridge
+hop is outside this control.
+
+| Observed run | Server and route | Client | Requests | Deadlines | Samples with deadlines |
+|---|---|---|---:|---:|---|
+| Fresh baseline | Harness, host gateway | One-shot | 720 | 2 | 7 |
+| Fresh baseline | Plain bind, host gateway | One-shot | 720 | 0 | — |
+| Fresh baseline | Harness, host gateway | Long-lived | 720 | 0 | — |
+| Fresh baseline | Plain bind, host gateway | Long-lived | 720 | 0 | — |
+| Fresh baseline | Docker namespace | One-shot | 720 | 0 | — |
+| Fresh baseline | Docker namespace | Long-lived | 720 | 0 | — |
+| Fresh follow-up | Plain bind, host gateway | One-shot | 2,400 | 17 | 12, 19, 28, 36, 37, 40 |
+| Fresh follow-up | Harness, host gateway | One-shot | 2,400 | 13 | 7, 25, 29, 31 |
+| Fresh follow-up | Harness, host gateway | Long-lived | 2,400 | 10 | 20, 29, 38, 39 |
+| Keep-alive follow-up | All six variants, 1,200 each | Both | 7,200 | 0 | — |
+| TCP-state follow-up | Harness, host gateway | One-shot | 1,080 | 0 | — |
+| TCP-state follow-up | Plain bind, host gateway | One-shot | 1,080 | 2 | 9 |
+| TCP-state follow-up | Harness, host gateway | Long-lived | 1,080 | 1 | 18 |
+| TCP-state follow-up | Plain bind, host gateway | Long-lived | 1,080 | 3 | 10, 11 |
+| TCP-state follow-up | Docker namespace | One-shot | 1,080 | 0 | — |
+| TCP-state follow-up | Docker namespace | Long-lived | 1,080 | 0 | — |
+
+**Observed boundary.** All 48 deadlines occurred after DNS lookup with no
+client `connect` or request write completion. In the TCP-state follow-up, all
+six affected Linux sockets were still in `SYN_SENT` at the deadline. Each
+affected batch had only the Windows accepts and first-byte records for its
+successful siblings. In `harness-long-lived-18-8`, two clients started. One
+was accepted in about 4.7 ms and delivered bytes in about 5.8 ms. Its sibling
+resolved the gateway in 2.7 ms and remained in `SYN_SENT` at 5,003 ms. There
+was one accept in that batch's deadline window. Wall times across the two
+clocks are approximate. The five affected batches account for all six misses.
+The final Docker namespace control recorded 2,160 accepts, first reads and ASGI
+entries for its 2,160 requests. Keep-alive used fewer new TCP connections, so
+its 7,200 successful requests represent a different connection load.
+
+**Inferred verdict.** The intermittent stall is in TCP establishment on the
+Docker Desktop Windows host-forwarding path, before Uvicorn accepts a
+connection. It occurs on either host bind and survives reuse of the client
+container. The specific Desktop forwarding component and the packet-level
+cause remain unverified.
+
+**Part B decision.** The transport change and ten-run acceptance batch stop
+here under the external-cause condition. Options are to report the JSONL
+capture to Docker Desktop support and repeat the probe on another Desktop
+version, or separately design a private Docker path that avoids host
+forwarding while keeping operator-facing ports on loopback. The namespace
+control measures a candidate path for a separate design.
