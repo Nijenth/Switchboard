@@ -238,3 +238,24 @@ remains unverified. The CI-only follow-up changes no runtime code.
   and mutations share a non-blocking lock. Tests covered pool lifetime and
   reuse, report reuse, and HTTP 409 while a concurrent read or mutation holds
   the lock.
+- **Part D (observed).** A real Windows read handle made `Path.replace()`
+  raise WinError 5 and end the old heartbeat loop. The regression test holds
+  that handle through the first failed replacement and confirms the next
+  heartbeat is published. The public test retains its strict comparison.
+- **Part D (inferred).** The reproduced race explains the timestamp tie in
+  ADR 0033 §3. The original failing run's owner exception is unverified.
+
+### Local verification
+
+| Check | Observed result |
+|---|---|
+| Ruff, format, mypy `app harness` | Pass, 48 formatted files and 33 typed source files |
+| Pack validation and secret scan | Pass, zero secret findings |
+| Targeted console and heartbeat pytest | 47 passed, 1 lifecycle skip |
+| `db-check` | Exit 0, no SQL failures |
+| `test_core.sh` | 194 passed, 19 skipped |
+| `test_core.sh --offline-ai` | 211 passed, 2 skipped. Fixture eval gates passed |
+| `test_core.sh --offline-n8n` | One run, exit 1. 212 passed including the public heartbeat lifecycle. `SwitchboardDispatch1` timed out before the console step. See ADR 0033 §10 |
+
+**Unverified.** The real-HTTP browser console block and ten consecutive n8n
+passes remain open. Hosted CI has no result for this branch.

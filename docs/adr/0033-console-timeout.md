@@ -158,7 +158,7 @@ host Python 3.12.10 and Uvicorn 0.54.0, and Node 26.12.1 in the pinned n8n image
 0.51.0. The probe uses Node HTTP and a minimal ASGI response. It needs no database,
 n8n workflow execution, or credentials.
 
-From `services/core` in the Python 3.12 environment:
+Run the probe from `services/core` in the Python 3.12 environment.
 
 ```bash
 python tests/probe_n8n_transport.py > probe.jsonl
@@ -228,3 +228,33 @@ capture to Docker Desktop support and repeat the probe on another Desktop
 version, or separately design a private Docker path that avoids host
 forwarding while keeping operator-facing ports on loopback. The namespace
 control measures a candidate path for a separate design.
+
+## 10. Heartbeat follow-up
+
+**Observed.** On Windows, holding `state.json` open with an ordinary text reader
+while the original `hold()` loop publishes a heartbeat makes `Path.replace()`
+raise `PermissionError` (WinError 5). The exception exits `hold()`, the published
+timestamp stays at its previous value, and the staged file remains. The
+regression test holds a real Windows read handle until that replacement fails,
+then closes it and checks that the heartbeat advances.
+
+**Inferred.** This reproduces the failure mechanism consistent with the
+timestamp tie in §3. The old run's owner-process exception was unavailable
+for confirmation.
+
+The writer keeps the last complete JSON visible and waits up to one second
+to complete the local atomic replacement after Windows access or sharing
+denial. It surfaces persistent and unrelated errors. The public lifecycle
+test keeps its original wait and strict heartbeat comparison and includes
+owner output in the assertion failure.
+
+### Final-revision offline n8n check
+
+| Run | Wall time | Observed result |
+|---|---:|---|
+| `offline-n8n-01` (2026-11-16) | 339.4 s | Exit 1, 212 passed and 1 failed. The public heartbeat lifecycle passed. `test_n8n_mock_outbound_loop` failed at `tests/test_n8n_outbound.py:257` with a `SwitchboardDispatch1` `createTimeoutError` and no HTTP status, before the console step. |
+
+**Inferred.** The workflow failure is consistent with the transport stall in
+§9. This suite run did not collect per-socket evidence. It was a single
+console and heartbeat verification attempt. The ten consecutive transport
+acceptance runs were skipped under the external-cause decision.

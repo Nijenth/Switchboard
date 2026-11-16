@@ -88,9 +88,23 @@ def is_alive(state: State) -> bool:
 
 def write_state(state: State) -> None:
     # Names and timestamps only. Tokens and passwords never reach this file.
-    temporary = state_file().with_suffix(".tmp")
-    temporary.write_text(json.dumps(state), encoding="utf-8")
-    temporary.replace(state_file())
+    path = state_file()
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(state), encoding="utf-8")
+        deadline = monotonic() + 1
+        while True:
+            try:
+                temporary.replace(path)
+                return
+            except PermissionError as error:
+                # Windows readers can temporarily deny delete sharing. Keep the
+                # last valid snapshot visible while waiting for the handle to close.
+                if getattr(error, "winerror", None) not in (5, 32) or monotonic() >= deadline:
+                    raise
+                sleep(0.05)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def owned_names(state: State) -> tuple[str | None, str | None, Path | None]:

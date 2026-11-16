@@ -324,3 +324,8 @@ Run `./scripts/test_core.ps1 -WithN8n` for the disposable workflow test. It uses
 `GET /api/state` and console mutations share the stack lock. A tab that receives
 HTTP 409 can refresh after the active operation finishes. A rejected state
 read starts no timeline or approval query.
+
+On Windows, a live-demo heartbeat update can briefly wait for an open state
+reader to release its file handle. If the owner exits with a persistent
+sharing or access error, close the process holding `state.json` open and run
+`scripts/demo_live down` to clear the disposable stack before starting it again.

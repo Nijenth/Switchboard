@@ -34,3 +34,10 @@
   The route inside Docker completed in the control. ADR 0033 records the
   timings. For pre-ASGI timeouts, check the client connect and server accept
   before changing application limits or the service lifecycle.
+
+## Atomic state files on Windows
+
+- An ordinary Windows read handle blocked the live demo's atomic heartbeat
+  replacement and exited its owner loop. The writer now waits briefly for
+  the handle to close while preserving the last complete snapshot. Verify
+  atomic state publication against an open reader on Windows.
